@@ -648,17 +648,25 @@ type recordingStore struct {
 	started   []queue.CommandStart
 	completed []queue.CommandResult
 
-	succeededJob int64
-	succeededRun int64
-	failedJob    int64
-	failedRun    int64
-	failure      string
-	retryDelay   time.Duration
-	failStatus   queue.Status
+	succeededJob    int64
+	succeededRun    int64
+	failedJob       int64
+	failedRun       int64
+	failure         string
+	interruptedWait bool
+	retryDelay      time.Duration
+	failStatus      queue.Status
 }
 
 func (store *recordingStore) Claim(context.Context) (*queue.Job, error) {
 	return nil, queue.ErrNoJob
+}
+
+func (store *recordingStore) InterruptResourceWait(_ context.Context, _, _ int64, _ string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.interruptedWait = true
+	return nil
 }
 
 func (store *recordingStore) StartCommand(_ context.Context, start queue.CommandStart) (int64, error) {

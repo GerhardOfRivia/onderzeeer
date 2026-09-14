@@ -14,6 +14,7 @@ import (
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/executor"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
+	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
 )
 
 const (
@@ -33,6 +34,7 @@ type Store interface {
 	CompleteCommand(context.Context, int64, queue.CommandResult) error
 	Succeed(context.Context, int64, int64) error
 	Fail(context.Context, int64, int64, string, time.Duration) (queue.Status, error)
+	InterruptResourceWait(context.Context, int64, int64, string) error
 }
 
 // PipelineResolver resolves the current command pipeline for a watch name.
@@ -105,6 +107,7 @@ func cloneMounts(mounts []config.MountConfig) []config.MountConfig {
 
 // Options configures a worker pool.
 type Options struct {
+	Resources          *resource.Coordinator
 	Workers            int
 	RetryDelay         time.Duration
 	PollInterval       time.Duration
@@ -114,6 +117,7 @@ type Options struct {
 
 // Pool runs a fixed number of queue consumers.
 type Pool struct {
+	resources          *resource.Coordinator
 	store              Store
 	resolver           PipelineResolver
 	executor           executor.Executor
@@ -157,7 +161,12 @@ func New(store Store, resolver PipelineResolver, commandExecutor executor.Execut
 		options.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 
+	if options.Resources == nil {
+		options.Resources = &resource.Coordinator{}
+	}
+
 	return &Pool{
+		resources:          options.Resources,
 		store:              store,
 		resolver:           resolver,
 		executor:           commandExecutor,
@@ -215,7 +224,12 @@ func (pool *Pool) consume(ctx context.Context, workerNumber int) {
 
 		logger.Info("running job", "job_id", job.ID, "run_id", job.RunID, "attempt", job.Attempt)
 		if err := pool.processJob(ctx, job); err != nil {
-			logger.Error("job attempt failed", "job_id", job.ID, "run_id", job.RunID, "error", err)
+			var waiting *resourceWaitError
+			if errors.As(err, &waiting) {
+				logger.Info("job resource wait interrupted", "job_id", job.ID, "run_id", job.RunID, "error", err)
+			} else {
+				logger.Error("job attempt failed", "job_id", job.ID, "run_id", job.RunID, "error", err)
+			}
 		} else {
 			logger.Info("job succeeded", "job_id", job.ID, "run_id", job.RunID)
 		}
@@ -248,61 +262,18 @@ func (pool *Pool) processJob(ctx context.Context, job *queue.Job) error {
 		if err := expanded.ValidateExecution(); err != nil {
 			return pool.failJob(job, fmt.Errorf("command %q after template expansion: %w", expanded.Name, err))
 		}
-		command := commandFromConfig(expanded)
-		commandID, err := pool.store.StartCommand(ctx, queue.CommandStart{
-			RunID:      job.RunID,
-			Sequence:   index + 1,
-			Name:       command.Name,
-			Program:    command.Program,
-			Args:       append([]string(nil), command.Args...),
-			Env:        executor.Environment(command.Env),
-			WorkingDir: command.WorkingDir,
-			Timeout:    command.Timeout,
-		})
-		if err != nil {
-			return pool.failJob(job, fmt.Errorf("record command %q start: %w", command.Name, err))
-		}
-
-		pool.logger.Info("running command",
-			"job_id", job.ID,
-			"run_id", job.RunID,
-			"command_id", commandID,
-			"sequence", index+1,
-			"command", command.Name,
-			"program", command.Program,
-			"args", command.Args,
-		)
-
-		result, executionErr := pool.executor.Execute(ctx, command)
-		if executionErr == nil && result.ExitCode != 0 {
-			executionErr = fmt.Errorf("command exited with code %d", result.ExitCode)
-		}
-		executionErr = withFailureOutput(executionErr, result)
-		commandStatus := queue.CommandSucceeded
-		errorText := ""
-		if executionErr != nil {
-			commandStatus = queue.CommandFailed
-			errorText = executionErr.Error()
-		}
-
-		persistContext, cancel := pool.persistenceContext()
-		completeErr := pool.store.CompleteCommand(persistContext, commandID, queue.CommandResult{
-			Status:   commandStatus,
-			ExitCode: result.ExitCode,
-			Stdout:   result.Stdout,
-			Stderr:   result.Stderr,
-			Error:    errorText,
-		})
-		cancel()
-		if completeErr != nil {
-			if executionErr != nil {
-				executionErr = errors.Join(executionErr, fmt.Errorf("persist command result: %w", completeErr))
-			} else {
-				executionErr = fmt.Errorf("persist command result: %w", completeErr)
+		if err := pool.processCommand(ctx, job, index, expanded); err != nil {
+			var waiting *resourceWaitError
+			if errors.As(err, &waiting) {
+				persistContext, cancel := pool.persistenceContext()
+				persistErr := pool.store.InterruptResourceWait(persistContext, job.ID, job.RunID, err.Error())
+				cancel()
+				if persistErr != nil {
+					return errors.Join(err, fmt.Errorf("requeue interrupted resource wait: %w", persistErr))
+				}
+				return err
 			}
-		}
-		if executionErr != nil {
-			return pool.failJob(job, fmt.Errorf("command %q: %w", command.Name, executionErr))
+			return pool.failJob(job, err)
 		}
 	}
 
@@ -314,6 +285,92 @@ func (pool *Pool) processJob(ctx context.Context, job *queue.Job) error {
 	}
 	return nil
 }
+
+// processCommand scopes the reservation to one step, including all early exits.
+func (pool *Pool) processCommand(ctx context.Context, job *queue.Job, index int, expanded config.CommandConfig) error {
+	release := func() {}
+	if expanded.Resources != "" {
+		logger := pool.logger.With("resource", expanded.Resources, "watch", job.WatchName,
+			"step", index+1, "command", expanded.Name, "job_id", job.ID, "run_id", job.RunID)
+		logger.Info("waiting for resource")
+		unlock, err := pool.resources.Acquire(ctx, expanded.Resources)
+		if err != nil {
+			logger.Info("resource wait canceled", "error", err)
+			return &resourceWaitError{fmt.Errorf("command %q waiting for resource %q: %w", expanded.Name, expanded.Resources, err)}
+		}
+		logger.Info("resource acquired")
+		var once sync.Once
+		release = func() {
+			once.Do(func() {
+				unlock()
+				logger.Info("resource released")
+			})
+		}
+	}
+	defer release()
+	command := commandFromConfig(expanded)
+	commandID, err := pool.store.StartCommand(ctx, queue.CommandStart{
+		RunID:      job.RunID,
+		Sequence:   index + 1,
+		Name:       command.Name,
+		Program:    command.Program,
+		Args:       append([]string(nil), command.Args...),
+		Env:        executor.Environment(command.Env),
+		WorkingDir: command.WorkingDir,
+		Timeout:    command.Timeout,
+	})
+	if err != nil {
+		return fmt.Errorf("record command %q start: %w", command.Name, err)
+	}
+
+	pool.logger.Info("running command",
+		"job_id", job.ID,
+		"run_id", job.RunID,
+		"command_id", commandID,
+		"sequence", index+1,
+		"command", command.Name,
+		"program", command.Program,
+		"args", command.Args,
+	)
+
+	result, executionErr := pool.executor.Execute(ctx, command)
+	release()
+	if executionErr == nil && result.ExitCode != 0 {
+		executionErr = fmt.Errorf("command exited with code %d", result.ExitCode)
+	}
+	executionErr = withFailureOutput(executionErr, result)
+	commandStatus := queue.CommandSucceeded
+	errorText := ""
+	if executionErr != nil {
+		commandStatus = queue.CommandFailed
+		errorText = executionErr.Error()
+	}
+
+	persistContext, cancel := pool.persistenceContext()
+	completeErr := pool.store.CompleteCommand(persistContext, commandID, queue.CommandResult{
+		Status:   commandStatus,
+		ExitCode: result.ExitCode,
+		Stdout:   result.Stdout,
+		Stderr:   result.Stderr,
+		Error:    errorText,
+	})
+	cancel()
+	if completeErr != nil {
+		if executionErr != nil {
+			executionErr = errors.Join(executionErr, fmt.Errorf("persist command result: %w", completeErr))
+		} else {
+			executionErr = fmt.Errorf("persist command result: %w", completeErr)
+		}
+	}
+	if executionErr != nil {
+		return fmt.Errorf("command %q: %w", command.Name, executionErr)
+	}
+	return nil
+}
+
+type resourceWaitError struct{ error }
+
+func (err *resourceWaitError) Unwrap() error { return err.error }
 
 // withFailureOutput adds one small diagnostic to an execution error. Complete
 // command output remains available in history, so the job error only needs the

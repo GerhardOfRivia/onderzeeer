@@ -46,7 +46,9 @@ type Server struct {
 // NewServer acquires address immediately and constructs a web server. The
 // address must contain an explicit loopback or wildcard host and TCP port.
 // version is the running onderzeeerd build version displayed by the dashboard.
-func NewServer(address, tokenPath, version string, manager *control.Manager, logger *slog.Logger) (*Server, error) {
+// publicRead allows anonymous dashboard reads; control operations always require
+// the access token.
+func NewServer(address, tokenPath, version string, manager *control.Manager, logger *slog.Logger, publicRead bool) (*Server, error) {
 	if manager == nil {
 		return nil, errors.New("webui: manager is required")
 	}
@@ -80,7 +82,7 @@ func NewServer(address, tokenPath, version string, manager *control.Manager, log
 		_ = listener.Close()
 		return nil, err
 	}
-	handler, err := newHandlerForListener(manager, logger, token, version, wildcard)
+	handler, err := newHandlerForListener(manager, logger, token, version, wildcard, publicRead)
 	if err != nil {
 		_ = listener.Close()
 		removeAccessToken(tokenPath, token)
@@ -194,8 +196,8 @@ func (server *Server) Address() string {
 	return server.address
 }
 
-// TokenPath returns the private file containing the bearer token required by
-// the JSON API.
+// TokenPath returns the private file containing the bearer token required for
+// control operations and, unless public reads are enabled, API reads.
 func (server *Server) TokenPath() string {
 	if server == nil {
 		return ""
@@ -263,7 +265,7 @@ func (server *Server) Close() error {
 	return server.closeErr
 }
 
-func newHandlerForListener(manager *control.Manager, logger *slog.Logger, token, version string, allowRemoteIPHosts bool) (http.Handler, error) {
+func newHandlerForListener(manager *control.Manager, logger *slog.Logger, token, version string, allowRemoteIPHosts, publicRead bool) (http.Handler, error) {
 	dist, err := fs.Sub(embeddedAssets, "dist")
 	if err != nil {
 		return nil, fmt.Errorf("webui: open embedded assets: %w", err)
@@ -273,15 +275,22 @@ func newHandlerForListener(manager *control.Manager, logger *slog.Logger, token,
 		return nil, fmt.Errorf("webui: read embedded index: %w", err)
 	}
 	files := http.FileServer(http.FS(dist))
-	api := apiServer{manager: manager, logger: logger, version: version}
+	api := apiServer{manager: manager, logger: logger, version: version, publicRead: publicRead}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/info", api.handleInfo)
-	mux.HandleFunc("GET /api/v1/queues", api.handleQueues)
-	mux.HandleFunc("GET /api/v1/queues/{queueID}/jobs", api.handleJobs)
-	mux.HandleFunc("GET /api/v1/queues/{queueID}/jobs/{jobID}", api.handleJob)
-	mux.HandleFunc("GET /api/v1/queues/{queueID}/commands/{commandID}/output", api.handleCommandOutput)
-	mux.HandleFunc("GET /api/v1/instances", api.handleInstances)
+	publicReads := make(map[string]bool)
+	read := func(pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(pattern, handler)
+		if publicRead {
+			publicReads[pattern] = true
+		}
+	}
+	read("GET /api/v1/info", api.handleInfo)
+	read("GET /api/v1/queues", api.handleQueues)
+	read("GET /api/v1/queues/{queueID}/jobs", api.handleJobs)
+	read("GET /api/v1/queues/{queueID}/jobs/{jobID}", api.handleJob)
+	read("GET /api/v1/queues/{queueID}/commands/{commandID}/output", api.handleCommandOutput)
+	read("GET /api/v1/instances", api.handleInstances)
 	mux.HandleFunc("POST /api/v1/queues/{queueID}/start", api.handleStart)
 	mux.HandleFunc("POST /api/v1/instances/{instanceID}/stop", api.handleStop)
 	mux.HandleFunc("/", func(output http.ResponseWriter, request *http.Request) {
@@ -313,18 +322,30 @@ func newHandlerForListener(manager *control.Manager, logger *slog.Logger, token,
 		_, _ = output.Write(index)
 	})
 
-	return securityHeaders(validateHost(requireAPIAuth(token, mux), allowRemoteIPHosts)), nil
+	return securityHeaders(validateHost(requireAPIAuth(token, mux, publicReads), allowRemoteIPHosts)), nil
 }
 
-func requireAPIAuth(token string, next http.Handler) http.Handler {
+type authenticatedContextKey struct{}
+
+func requireAPIAuth(token string, next *http.ServeMux, publicReads map[string]bool) http.Handler {
 	return http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
 		if isAPIPath(request.URL.Path) {
-			provided := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
-			if provided == request.Header.Get("Authorization") ||
-				subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			headers := request.Header.Values("Authorization")
+			provided, bearer := strings.CutPrefix(request.Header.Get("Authorization"), "Bearer ")
+			authenticated := len(headers) == 1 && bearer && token != "" &&
+				subtle.ConstantTimeCompare([]byte(provided), []byte(token)) == 1
+			// Use the mux's matched method/path pattern, so only explicitly
+			// registered reads (including HEAD) can bypass authentication.
+			// A supplied but invalid token must never silently become anonymous.
+			_, pattern := next.Handler(request)
+			anonymousRead := len(headers) == 0 && publicReads[pattern]
+			if !authenticated && !anonymousRead {
 				output.Header().Set("WWW-Authenticate", `Bearer realm="onderzeeer-web"`)
 				writeAPIError(output, http.StatusUnauthorized, "unauthorized", "A valid onderzeeer web token is required")
 				return
+			}
+			if authenticated {
+				request = request.WithContext(context.WithValue(request.Context(), authenticatedContextKey{}, true))
 			}
 		}
 		next.ServeHTTP(output, request)

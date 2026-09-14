@@ -84,3 +84,50 @@ func TestDaemonHelperProcess(t *testing.T) {
 	}
 	os.Exit(2)
 }
+
+func TestWebPublicReadEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{"", false}, {" \t", false}, {"false", false}, {"0", false},
+		{"true", true}, {"1", true}, {" TRUE ", true},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			t.Setenv("ONDERZEEER_WEB_PUBLIC_READ", test.value)
+			got, err := webPublicReadEnabled()
+			if err != nil || got != test.want {
+				t.Fatalf("webPublicReadEnabled() = %t, %v; want %t", got, err, test.want)
+			}
+		})
+	}
+	// Unset has the same private default as an empty value.
+	t.Setenv("ONDERZEEER_WEB_PUBLIC_READ", "")
+	if err := os.Unsetenv("ONDERZEEER_WEB_PUBLIC_READ"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := webPublicReadEnabled(); err != nil || got {
+		t.Fatalf("unset webPublicReadEnabled() = %t, %v", got, err)
+	}
+}
+
+func TestDaemonRejectsInvalidPublicReadBeforeStartup(t *testing.T) {
+	for _, value := range []string{"yes", "enabled", "tru"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("ONDERZEEER_WEB_PUBLIC_READ", value)
+			root := t.TempDir()
+			state := filepath.Join(root, "state")
+			socket := filepath.Join(root, "control", "daemon.sock")
+			var stdout, stderr bytes.Buffer
+			code := RunDaemon([]string{"--state-dir", state, "--socket", socket}, &stdout, &stderr)
+			if code != 2 || !strings.Contains(stderr.String(), "ONDERZEEER_WEB_PUBLIC_READ must be a boolean") {
+				t.Fatalf("invalid public read: code=%d, stderr=%s", code, stderr.String())
+			}
+			for _, path := range []string{state, filepath.Dir(socket)} {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("invalid environment created %s: %v", path, err)
+				}
+			}
+		})
+	}
+}

@@ -56,6 +56,11 @@ func printPipelines(output io.Writer, configs []loadedConfig, raw bool) error {
 					index+1, command.Name, command.Executor, formatCommand(command.Program, command.ExecutionArgs())); err != nil {
 					return err
 				}
+				if command.Resources != "" {
+					if _, err := fmt.Fprintf(output, "     resources: %q\n", command.Resources); err != nil {
+						return err
+					}
+				}
 				if command.Output != "" {
 					if _, err := fmt.Fprintf(output, "     output: %q\n", command.Output); err != nil {
 						return err

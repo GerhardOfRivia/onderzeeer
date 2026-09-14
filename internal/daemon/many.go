@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
+	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
 )
 
 // NamedConfig associates a loaded configuration with the path used to load it.
@@ -25,7 +26,10 @@ type runnerFunc func(context.Context, *config.Config, *slog.Logger) error
 // queue. If one daemon fails, all of its siblings are canceled before RunMany
 // returns the failure.
 func RunMany(ctx context.Context, configs []NamedConfig, logger *slog.Logger) error {
-	return runMany(ctx, configs, logger, Run)
+	resources := &resource.Coordinator{}
+	return runMany(ctx, configs, logger, func(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+		return RunWithResources(ctx, cfg, logger, resources)
+	})
 }
 
 func runMany(ctx context.Context, configs []NamedConfig, logger *slog.Logger, run runnerFunc) error {

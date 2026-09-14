@@ -77,10 +77,11 @@ func (d Duration) MarshalYAML() (any, error) {
 
 // Config is the complete onderzeeer configuration.
 type Config struct {
-	Queue    QueueConfig       `yaml:"queue"`
-	Database DatabaseConfig    `yaml:"database"`
-	Values   map[string]string `yaml:"values" json:"-"`
-	Watches  []WatchConfig     `yaml:"watches"`
+	Resources []string          `yaml:"resources,omitempty" json:",omitempty"`
+	Queue     QueueConfig       `yaml:"queue"`
+	Database  DatabaseConfig    `yaml:"database"`
+	Values    map[string]string `yaml:"values" json:"-"`
+	Watches   []WatchConfig     `yaml:"watches"`
 }
 
 // QueueConfig controls worker concurrency and retry behavior.
@@ -194,6 +195,7 @@ func validateMountMergeFields(node *yaml.Node, visited map[*yaml.Node]bool) erro
 // structured alternative to raw runtime CLI args.
 type CommandConfig struct {
 	Name          string            `yaml:"name"`
+	Resources     string            `yaml:"resources,omitempty" json:",omitempty"`
 	Executor      ExecutorType      `yaml:"executor"`
 	Program       string            `yaml:"program"`
 	Args          []string          `yaml:"args"`
@@ -429,6 +431,12 @@ func load(filename string, managed bool) (*Config, error) {
 		return nil, fmt.Errorf("open config: %w", err)
 	}
 	defer file.Close()
+	if err := validateResourceFields(file); err != nil {
+		return nil, fmt.Errorf("decode config resources: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind config: %w", err)
+	}
 
 	var cfg Config
 	decoder := yaml.NewDecoder(file)
@@ -555,6 +563,9 @@ func (c *Config) ApplyDefaults() {
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config is nil")
+	}
+	if err := c.ValidateResources(); err != nil {
+		return err
 	}
 	if err := c.expandValues(); err != nil {
 		return err

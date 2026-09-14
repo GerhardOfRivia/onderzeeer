@@ -13,8 +13,10 @@ Group=onderzeeer
 # Set the socket and optional dashboard in /etc/default/onderzeeer.
 # The leading '-' makes the environment file optional.
 # Environment=ONDERZEEER_SOCKET=/run/onderzeeer/onderzeeer.sock
+# The dashboard is disabled unless a listen address is set.
 # Environment=ONDERZEEER_WEB_LISTEN=127.0.0.1:8080
-# token-protected dashboard. It is intentionally disabled by default.
+# Optional public viewing; start/stop still requires a token.
+# Environment=ONDERZEEER_WEB_PUBLIC_READ=true
 # EnvironmentFile=-/etc/default/onderzeeer
 Environment=ONDERZEEER_STATE_DIR=/var/lib/onderzeeer
 

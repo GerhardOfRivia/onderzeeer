@@ -21,7 +21,7 @@ import (
 )
 
 func newHandler(manager *control.Manager, logger *slog.Logger, token, version string) (http.Handler, error) {
-	return newHandlerForListener(manager, logger, token, version, false)
+	return newHandlerForListener(manager, logger, token, version, false, false)
 }
 
 const testWebToken = "test-web-token"

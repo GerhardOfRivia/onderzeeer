@@ -12,6 +12,7 @@ import (
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/executor"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
+	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
 	"github.com/GerhardOfRivia/onderzeeer/internal/watcher"
 	"github.com/GerhardOfRivia/onderzeeer/internal/worker"
 )
@@ -22,11 +23,20 @@ const singleVersionFingerprint = "onderzeeer:path"
 // component returns an error. Interrupted child processes are persisted as a
 // failed attempt before workers stop whenever SQLite remains available.
 func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+	return RunWithResources(ctx, cfg, logger, &resource.Coordinator{})
+}
+
+// RunWithResources uses the caller's coordinator to share reservations across
+// otherwise independent queues. The control daemon owns one for its lifetime.
+func RunWithResources(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources *resource.Coordinator) error {
 	if ctx == nil {
 		return errors.New("daemon: context is required")
 	}
 	if cfg == nil {
 		return errors.New("daemon: config is required")
+	}
+	if err := cfg.ValidateResources(); err != nil {
+		return fmt.Errorf("daemon: validate config: %w", err)
 	}
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -87,6 +97,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 		executor.NewLocal(logger),
 		worker.Options{
 			Workers:    cfg.Queue.Workers,
+			Resources:  resources,
 			RetryDelay: cfg.Queue.RetryDelay.Duration,
 			Logger:     logger,
 		},

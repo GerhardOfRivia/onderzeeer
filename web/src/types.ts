@@ -4,6 +4,8 @@ export type CommandStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
 export interface InfoResponse {
   version: string
+  public_read: boolean
+  can_control: boolean
 }
 
 export interface QueueCounts {

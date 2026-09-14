@@ -50,6 +50,13 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS runs_job_idx ON runs (job_id, attempt);
 
+-- Interrupted resource waits retain their run history but do not spend the
+-- execution retry budget. A separate table upgrades existing queues without
+-- changing the released job/run schema or its monotonically increasing attempts.
+CREATE TABLE IF NOT EXISTS resource_wait_interruptions (
+    run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS command_executions (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id        INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,

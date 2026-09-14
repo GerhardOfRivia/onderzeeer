@@ -62,12 +62,12 @@ onderzeeer check csv_pipeline.yaml
 onderzeeer check --raw csv_pipeline.yaml
 ```
 
-`check` accepts a YAML file or directory and never contacts the daemon or opens
-the database. It resolves config-relative paths and reusable `values`, leaving
-per-job templates such as `{{file}}` unexpanded. Steps appear in execution order
-as shell-like command lines, with output paths when configured. This display
-does not imply shell execution; use `--raw` to see each quoted program and JSON
-argument array.
+`check` accepts a YAML file or directory without contacting the daemon, opening
+the database, or acquiring resources. It resolves config-relative paths and
+reusable `values`, leaving per-job templates such as `{{file}}` unexpanded. Steps
+appear in execution order as shell-like command lines, with configured output
+paths and resource requirements. This display does not imply shell execution;
+use `--raw` to see each quoted program and JSON argument array.
 
 ## generating pipeline configuration
 
@@ -209,9 +209,31 @@ output, including queues whose instances have stopped. It can restart known
 queues and stop active instances. Its header shows the daemon build version
 (`dev` when built without an override).
 
-Keep the token private: it authorizes reads and start/stop actions as the daemon
-user. Prefer loopback with an SSH tunnel. To opt into network access, use a
-wildcard bind such as `0.0.0.0:8080` or `[::]:8080` and connect by literal IP;
+To allow anyone who can reach the dashboard to browse without a token, set:
+
+```bash
+ONDERZEEER_WEB_PUBLIC_READ=true onderzeeerd --web-listen 127.0.0.1:8080
+```
+
+Public viewers see a **Read only** indicator and can browse queues, jobs,
+attempts, instance history, command details, and captured stdout/stderr. This
+includes file paths, command arguments, and logs. Start/Stop buttons are hidden,
+and the API still requires a valid token for these actions. Choose **Unlock
+controls** and enter the existing token to enable them; **Lock** returns to
+public viewing. A rejected or expired token also returns to public viewing.
+
+`ONDERZEEER_WEB_PUBLIC_READ` defaults to false when unset or empty, preserving
+the login requirement for all API reads. It accepts boolean values (`true` or
+`false`, also `1` or `0`); invalid values prevent daemon startup. Restart the
+daemon after changing it. This setting does not enable the web listener by
+itself or change its bind address. For Docker, pass
+`--env ONDERZEEER_WEB_PUBLIC_READ=true`; with the supplied Compose file, set
+`ONDERZEEER_WEB_PUBLIC_READ=true` in `.env`.
+
+Keep the token private: it authorizes start/stop actions as the daemon user,
+and reads when public viewing is disabled. Prefer loopback with an SSH tunnel.
+To opt into network access, use a wildcard bind such as `0.0.0.0:8080` or
+`[::]:8080` and connect by literal IP;
 concrete non-loopback bind addresses and arbitrary HTTP hostnames are rejected.
 Wildcard binds expose every interface, and HTTP traffic is unencrypted, so
 restrict access with a firewall and protect the network path.
@@ -474,6 +496,62 @@ at once. Exceeding these limits fails the instance. Removing or replacing a watc
 root, or a persistent loss of a kernel watch, also fails it; restore the expected
 path and restart the instance.
 
+### named shared resources
+
+Declare resources at the top level and use the scalar `resources` field on each
+step that needs exclusive access:
+
+```yaml
+resources:
+  - gpu
+
+watches:
+  - name: incoming
+    path: /srv/incoming
+    pipeline:
+      - name: prepare
+        executor: command
+        program: /opt/workflows/prepare
+        args: ["{{file}}"]
+
+      - name: test
+        resources: gpu
+        executor: docker
+        image: example/processor:latest
+        container_args: ["--rm", "--gpus", "all"]
+```
+
+The top-level list is optional. Each resource has capacity one, and a step may
+reference at most one resource using a scalar string. Names are case-sensitive,
+nonempty strings with no surrounding whitespace or template expansion. Non-string
+values, duplicate declarations, undeclared references, and declarations unused
+by any step in the configuration are rejected.
+
+Reservations are **daemon-wide**: instances declaring `gpu` compete for the same
+reservation while keeping separate queues and histories. Stopping one instance
+does not affect reservations held by others.
+
+A worker acquires the reservation immediately before executing the referencing
+step and releases it when execution returns, including failure, timeout, or
+cancellation. Requests are served in FIFO order. Waiting occupies a worker slot
+but does not start the step timeout or spend retries. Steps using different
+resources or no resources can run concurrently within each instance's worker
+limit. Logs record waiting, acquisition, release, and canceled waits.
+
+Canceling a waiting step removes its request and requeues the job. Its interrupted
+run remains in history as failed but does not spend retries. Restarting replays
+the whole pipeline; reservation order resets on daemon restart.
+
+Standalone `onderzeeer test` coordinates resources only within that run. It does
+not coordinate with managed instances or other standalone processes.
+
+Workloads must stay in the foreground until all resource use finishes; avoid
+detached containers (`-d`/`--detach`) and background work. The reservation covers
+host-side execution only: a Docker container may outlive its CLI after
+cancellation. Releasing a reservation does **not** prove the container stopped.
+Exclusivity through cancellation requires verified container termination or
+external resource coordination.
+
 ## delivery and recovery
 
 SQLite persists jobs, retries, and execution history. On startup, unfinished
@@ -657,6 +735,8 @@ Set the control socket and optional dashboard in `/etc/default/onderzeeer`:
 ONDERZEEER_SOCKET=/run/onderzeeer/onderzeeer.sock
 # Optional; the dashboard is disabled when this is unset.
 # ONDERZEEER_WEB_LISTEN=127.0.0.1:8080
+# Optional public viewing; start/stop still requires a token.
+# ONDERZEEER_WEB_PUBLIC_READ=true
 ```
 
 The unit restores registered instances and restarts after failures. Register

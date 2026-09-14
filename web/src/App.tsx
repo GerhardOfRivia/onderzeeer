@@ -11,6 +11,7 @@ import {
 import type {
   Command,
   CommandOutput,
+  InfoResponse,
   Instance,
   JobResponse,
   JobsResponse,
@@ -28,29 +29,85 @@ type OutputState =
 export default function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem(tokenKey) ?? '')
   const [authMessage, setAuthMessage] = useState('')
+  const [access, setAccess] = useState<InfoResponse | null>(null)
+  const [checkingAccess, setCheckingAccess] = useState(true)
+  const [accessError, setAccessError] = useState('')
+  const [accessAttempt, setAccessAttempt] = useState(0)
+  const [unlocking, setUnlocking] = useState(false)
   const [theme, setTheme] = useThemePreference()
+  const showDashboard = access !== null && !unlocking && !checkingAccess && !accessError
 
   useEffect(() => {
-    syncThemeColor(token ? 'dashboard' : 'auth')
-  }, [theme, token])
+    syncThemeColor(showDashboard ? 'dashboard' : 'auth')
+  }, [theme, showDashboard])
 
   const authenticate = (value: string) => {
     const normalized = value.trim()
     sessionStorage.setItem(tokenKey, normalized)
     setAuthMessage('')
+    setAccess(null)
+    setCheckingAccess(true)
+    setUnlocking(false)
     setToken(normalized)
   }
 
-  const signOut = (message = '') => {
+  const signOut = useCallback((message = '') => {
     sessionStorage.removeItem(tokenKey)
+    setAccess(null)
+    setCheckingAccess(true)
+    setUnlocking(false)
     setToken('')
     setAuthMessage(message)
-  }
+    setAccessAttempt((attempt) => attempt + 1)
+  }, [])
 
-  if (!token) {
-    return <TokenGate message={authMessage} theme={theme} onThemeChange={setTheme} onAuthenticate={authenticate} />
+  useEffect(() => {
+    const controller = new AbortController()
+    setCheckingAccess(true)
+    setAccessError('')
+    void api.info(token, controller.signal)
+      .then((info) => {
+        if (controller.signal.aborted) return
+        setAccess(info)
+        setCheckingAccess(false)
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return
+        if (error instanceof APIError && error.status === 401) {
+          if (token) {
+            signOut('That token was not accepted. Check the token file and try again.')
+            return
+          }
+          setAccess(null)
+        } else {
+          setAccessError(error instanceof Error ? error.message : 'Could not connect to onderzeeer')
+        }
+        setCheckingAccess(false)
+      })
+    return () => controller.abort()
+  }, [token, accessAttempt, signOut])
+
+  if (checkingAccess || accessError) {
+    return (
+      <main className="auth-shell">
+        <ThemeControl className="auth-theme-control" theme={theme} onChange={setTheme} />
+        <section className="auth-card" aria-live="polite">
+          <img className="brand-mark" src="/icon.png" alt="" />
+          <h1>{accessError ? 'Connection unavailable.' : 'Connecting…'}</h1>
+          {accessError && <>
+            <p className="form-error" role="alert">{accessError}</p>
+            <button className="button button-primary" onClick={() => setAccessAttempt((attempt) => attempt + 1)}>Retry</button>
+          </>}
+        </section>
+      </main>
+    )
   }
-  return <Dashboard token={token} theme={theme} onThemeChange={setTheme} onSignOut={signOut} />
+  if (!access || unlocking) {
+    return <TokenGate message={authMessage} theme={theme} onThemeChange={setTheme} onAuthenticate={authenticate}
+      onCancel={access?.public_read ? () => setUnlocking(false) : undefined} />
+  }
+  return <Dashboard token={token} access={access} authMessage={authMessage} onDismissAuthMessage={() => setAuthMessage('')}
+    theme={theme} onThemeChange={setTheme} onSignOut={signOut} onUnlock={() => setUnlocking(true)} />
 }
 
 function useThemePreference() {
@@ -103,11 +160,13 @@ function TokenGate({
   theme,
   onThemeChange,
   onAuthenticate,
+  onCancel,
 }: {
   message: string
   theme: ThemePreference
   onThemeChange: (theme: ThemePreference) => void
   onAuthenticate: (token: string) => void
+  onCancel?: () => void
 }) {
   const [value, setValue] = useState('')
 
@@ -122,7 +181,7 @@ function TokenGate({
       <section className="auth-card" aria-labelledby="auth-title">
         <img className="brand-mark" src="/icon.png" alt="" />
         <p className="eyebrow">Local control plane</p>
-        <h1 id="auth-title">Enter the control room.</h1>
+        <h1 id="auth-title">{onCancel ? 'Unlock controls.' : 'Enter the control room.'}</h1>
         <p className="auth-copy">
           Paste the access token from the private token file shown in the <code>onderzeeerd</code> startup log.
           It stays in this browser tab only.
@@ -141,8 +200,9 @@ function TokenGate({
           />
           {message && <p className="form-error" role="alert">{message}</p>}
           <button className="button button-primary button-wide" type="submit" disabled={!value.trim()}>
-            Open dashboard <span aria-hidden="true">→</span>
+            {onCancel ? 'Unlock controls' : 'Open dashboard'} <span aria-hidden="true">→</span>
           </button>
+          {onCancel && <button className="button button-wide" type="button" onClick={onCancel}>Back to read-only view</button>}
         </form>
         <p className="auth-note">
           This token is sent with dashboard API requests. Plain HTTP does not protect it on an untrusted network.
@@ -155,17 +215,25 @@ function TokenGate({
 
 function Dashboard({
   token,
+  access,
+  authMessage,
+  onDismissAuthMessage,
   theme,
   onThemeChange,
   onSignOut,
+  onUnlock,
 }: {
   token: string
+  access: InfoResponse
+  authMessage: string
+  onDismissAuthMessage: () => void
   theme: ThemePreference
   onThemeChange: (theme: ThemePreference) => void
   onSignOut: (message?: string) => void
+  onUnlock: () => void
 }) {
+  const canControl = access.can_control
   const [tab, setTab] = useState<'queues' | 'instances'>('queues')
-  const [version, setVersion] = useState<string | null>(null)
   const [queues, setQueues] = useState<QueueSummary[] | null>(null)
   const [instances, setInstances] = useState<Instance[] | null>(null)
   const [selectedQueueID, setSelectedQueueID] = useState('')
@@ -196,20 +264,6 @@ function Dashboard({
     }
     return error instanceof Error ? error.message : fallback
   }, [onSignOut])
-
-  useEffect(() => {
-    const controller = new AbortController()
-    void api.info(token, controller.signal)
-      .then((info) => {
-        if (!controller.signal.aborted) setVersion(info.version || '')
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return
-        handleError(error, 'Could not load version')
-        setVersion('')
-      })
-    return () => controller.abort()
-  }, [handleError, token])
 
   const refreshOverview = useCallback(async () => {
     if (overviewController.current) return
@@ -419,6 +473,7 @@ function Dashboard({
   }
 
   const performAction = async (kind: 'start' | 'stop', id: string) => {
+    if (!canControl) return
     if (kind === 'stop' && !window.confirm('Stop this onderzeeer instance gracefully?')) return
     setActionID(id)
     setActionError('')
@@ -463,7 +518,7 @@ function Dashboard({
           <img className="brand-mark brand-mark-small" src="/icon.png" alt="" />
           <div>
             <strong>onderzeeer</strong>
-            <span className="daemon-version">Version {version === null ? 'loading…' : version || 'unavailable'}</span>
+            <span className="daemon-version">Version {access.version || 'unavailable'}</span>
           </div>
         </div>
         <nav className="topnav" aria-label="Primary">
@@ -475,9 +530,17 @@ function Dashboard({
           <span className={`connection-state ${refreshError ? 'offline' : lastUpdated ? 'online' : 'connecting'}`}>
             <i /> {refreshError ? 'Refresh failed' : lastUpdated ? 'Local daemon' : 'Connecting'}
           </span>
-          <button className="text-button" onClick={() => onSignOut()}>Lock</button>
+          {!canControl && <span className="read-only-badge">Read only</span>}
+          {canControl
+            ? <button className="text-button" onClick={() => onSignOut()}>Lock</button>
+            : <button className="text-button" onClick={onUnlock}>Unlock controls</button>}
         </div>
       </header>
+
+      {authMessage && <div className="notice notice-error" role="alert">
+        <span>{authMessage}</span>
+        <button onClick={onDismissAuthMessage}>Dismiss</button>
+      </div>}
 
       {(refreshError || actionError) && (
         <div className="notice notice-error" role="alert">
@@ -520,6 +583,7 @@ function Dashboard({
                   queues={queues}
                   selectedID={selectedQueueID}
                   actionID={actionID}
+                  canControl={canControl}
                   onSelect={changeQueue}
                   onAction={performAction}
                 />
@@ -542,7 +606,7 @@ function Dashboard({
             )}
           </>
         ) : (
-          <InstancesPanel instances={instances} actionID={actionID} onStop={(id) => void performAction('stop', id)} />
+          <InstancesPanel instances={instances} actionID={actionID} canControl={canControl} onStop={(id) => void performAction('stop', id)} />
         )}
       </main>
 
@@ -565,12 +629,14 @@ function QueueRail({
   queues,
   selectedID,
   actionID,
+  canControl,
   onSelect,
   onAction,
 }: {
   queues: QueueSummary[]
   selectedID: string
   actionID: string
+  canControl: boolean
   onSelect: (id: string) => void
   onAction: (kind: 'start' | 'stop', id: string) => void
 }) {
@@ -599,14 +665,14 @@ function QueueRail({
                 </span>
                 <span className="queue-total">{queue.counts.total}</span>
               </button>
-              <button
+              {canControl && <button
                 className={`mini-action ${active ? 'stop' : ''}`}
                 onClick={() => onAction(active ? 'stop' : 'start', actionKey)}
                 disabled={Boolean(actionID) || instanceState === 'stopping'}
                 aria-label={`${active ? 'Stop' : 'Start'} ${queue.display_name}`}
               >
                 {actionID === actionKey ? '…' : instanceState === 'stopping' ? '…' : active ? '■' : '▶'}
-              </button>
+              </button>}
             </article>
           )
         })}
@@ -750,10 +816,12 @@ function QueuePanel({
 function InstancesPanel({
   instances,
   actionID,
+  canControl,
   onStop,
 }: {
   instances: Instance[] | null
   actionID: string
+  canControl: boolean
   onStop: (id: string) => void
 }) {
   if (instances === null) return <TableSkeleton />
@@ -766,7 +834,7 @@ function InstancesPanel({
       <div className="table-wrap">
         <table>
           <thead>
-            <tr><th>State</th><th>Instance</th><th>Configuration</th><th>Started</th><th>Duration</th><th /></tr>
+            <tr><th>State</th><th>Instance</th><th>Configuration</th><th>Started</th><th>Duration</th>{canControl && <th />}</tr>
           </thead>
           <tbody>
             {instances.map((instance) => (
@@ -780,13 +848,13 @@ function InstancesPanel({
                 <td><span className="path-cell" title={instance.config_path}>{instance.config_path}</span></td>
                 <td>{formatDate(instance.started_at)}</td>
                 <td>{duration(instance.started_at, instance.finished_at)}</td>
-                <td>
+                {canControl && <td>
                   {(['running', 'stopping'].includes(instance.state) || instance.desired_state === 'running') && (
                     <button className="button button-danger button-small" disabled={Boolean(actionID) || instance.state === 'stopping'} onClick={() => onStop(instance.id)}>
                       {instance.state === 'stopping' ? 'Stopping' : actionID === instance.id ? 'Working…' : 'Stop'}
                     </button>
                   )}
-                </td>
+                </td>}
               </tr>
             ))}
           </tbody>

@@ -276,6 +276,7 @@ code, pre, .eyebrow, .status, .section-label, .metric span, .update-block, th, .
 .connection-state.offline i { background: var(--failed); box-shadow: 0 0 0 4px color-mix(in srgb, var(--failed) 18%, transparent); }
 .text-button { padding: 6px 0; border: 0; color: var(--chrome-secondary); background: none; cursor: pointer; font-size: 12px; }
 .text-button:hover { color: var(--chrome-text); }
+.read-only-badge { padding: 4px 7px; border: 1px solid var(--chrome-secondary); border-radius: 4px; color: var(--chrome-secondary); font-size: 11px; white-space: nowrap; }
 
 .theme-control { display: inline-flex; align-items: center; gap: 7px; color: var(--chrome-muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
 .theme-control select { height: 32px; padding: 0 24px 0 9px; border: 1px solid var(--chrome-control-border); border-radius: 2px; color: var(--chrome-text); background: var(--chrome-control-bg); color-scheme: dark; cursor: pointer; font-size: 10px; letter-spacing: 0; text-transform: none; }
@@ -461,7 +462,7 @@ dd { margin: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; whit
 .auth-note { margin: 22px 0 0; color: var(--auth-note); font-size: 10px; text-align: center; }
 
 @media (max-width: 980px) {
-  .topbar { grid-template-columns: 1fr auto; padding: 0 20px; }
+  .topbar { grid-template-columns: 1fr auto; padding: 0 20px; backdrop-filter: none; }
   .topnav { position: fixed; right: 0; bottom: 0; left: 0; z-index: 30; height: 58px; justify-content: center; color: var(--chrome-text); background: var(--chrome-bg); border-top: 1px solid var(--chrome-border); }
   .topnav button { min-width: 150px; }
   .topnav button::after { top: 0; bottom: auto; }
@@ -475,8 +476,8 @@ dd { margin: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; whit
 }
 
 @media (max-width: 640px) {
-  .topbar { min-height: 62px; height: auto; padding-top: 10px; padding-bottom: 10px; gap: 12px; }
-  .topbar-actions { gap: 10px; }
+  .topbar { grid-template-columns: minmax(0, 1fr); min-height: 62px; height: auto; padding-top: 10px; padding-bottom: 10px; gap: 12px; }
+  .topbar-actions { justify-self: stretch; justify-content: space-between; gap: 10px; }
   .brand-mark-small { width: 51px; height: 34px; }
   .theme-control > span { display: none; }
   .auth-theme-control { top: 14px; right: 14px; }

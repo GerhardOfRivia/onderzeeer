@@ -34,7 +34,7 @@ func TestServerAllowsWildcardWithWarningAndManagesPrivateToken(t *testing.T) {
 	tokenPath := filepath.Join(tokenDirectory, "web.token")
 	var wildcardLogs bytes.Buffer
 	wildcardLogger := slog.New(slog.NewTextHandler(&wildcardLogs, nil))
-	wildcardServer, err := NewServer("0.0.0.0:0", tokenPath, "dev", manager, wildcardLogger)
+	wildcardServer, err := NewServer("0.0.0.0:0", tokenPath, "dev", manager, wildcardLogger, true)
 	if err != nil {
 		t.Fatalf("NewServer wildcard: %v", err)
 	}
@@ -50,6 +50,14 @@ func TestServerAllowsWildcardWithWarningAndManagesPrivateToken(t *testing.T) {
 	if remoteResponse.Code != http.StatusOK {
 		t.Fatalf("wildcard remote-IP Host status = %d, want 200", remoteResponse.Code)
 	}
+	infoRequest := httptest.NewRequest(http.MethodGet, "http://192.0.2.25/api/v1/info", nil)
+	infoResponseRecorder := httptest.NewRecorder()
+	wildcardServer.httpServer.Handler.ServeHTTP(infoResponseRecorder, infoRequest)
+	var publicInfo infoResponse
+	decodeResponse(t, infoResponseRecorder.Result(), http.StatusOK, &publicInfo)
+	if !publicInfo.PublicRead || publicInfo.CanControl {
+		t.Fatalf("anonymous public permissions = %+v", publicInfo)
+	}
 	dnsRequest := httptest.NewRequest(http.MethodGet, "http://dashboard.example/", nil)
 	dnsResponse := httptest.NewRecorder()
 	wildcardServer.httpServer.Handler.ServeHTTP(dnsResponse, dnsRequest)
@@ -59,11 +67,11 @@ func TestServerAllowsWildcardWithWarningAndManagesPrivateToken(t *testing.T) {
 	if err := wildcardServer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewServer("192.0.2.25:0", tokenPath, "dev", manager, testLogger()); err == nil {
+	if _, err := NewServer("192.0.2.25:0", tokenPath, "dev", manager, testLogger(), false); err == nil {
 		t.Fatal("NewServer accepted a concrete non-loopback listener")
 	}
 
-	server, err := NewServer("127.0.0.1:0", tokenPath, "1.2.3-test", manager, testLogger())
+	server, err := NewServer("127.0.0.1:0", tokenPath, "1.2.3-test", manager, testLogger(), false)
 	if err != nil {
 		t.Fatal(err)
 	}

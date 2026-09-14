@@ -9,6 +9,36 @@ import (
 	"testing"
 )
 
+func TestCheckResourcesRemainOffline(t *testing.T) {
+	t.Setenv("ONDERZEEER_SOCKET", filepath.Join(t.TempDir(), "nonexistent.sock"))
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	contents := `resources: [gpu]
+database: {path: ./never-created.db}
+watches:
+  - name: incoming
+    path: ./missing-watch
+    pipeline:
+      - {name: prepare, program: /missing/program}
+      - {name: test, resources: gpu, executor: docker, image: example/processor:latest, container_args: [--rm, --gpus, all]}
+`
+	if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"check", path}, {"check", "--raw", path}} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(args, &stdout, &stderr); code != 0 {
+			t.Fatalf("check: %d, %s", code, stderr.String())
+		}
+		if strings.Count(stdout.String(), `resources: "gpu"`) != 1 || !strings.Contains(stdout.String(), "2. test") {
+			t.Fatalf("requirements missing: %s", stdout.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "never-created.db")); !os.IsNotExist(err) {
+		t.Fatalf("database accessed: %v", err)
+	}
+}
+
 func TestCheckWarnsAboutDockerTerminalFlags(t *testing.T) {
 	t.Parallel()
 	for _, pipeline := range []string{

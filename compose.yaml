@@ -15,6 +15,7 @@ services:
       ONDERZEEER_SOCKET: /run/onderzeeer/onderzeeer.sock
       ONDERZEEER_STATE_DIR: "${ONDERZEEER_WORKSPACE}/state"
       ONDERZEEER_WEB_LISTEN: "0.0.0.0:5280"
+      ONDERZEEER_WEB_PUBLIC_READ: "${ONDERZEEER_WEB_PUBLIC_READ:-false}"
 
     # Register instances with onderzeeer start; daemon restarts restore the registry.
 

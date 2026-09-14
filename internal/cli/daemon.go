@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -71,6 +72,10 @@ func daemonCommand(args []string, stderr io.Writer, version string) error {
 	if flags.NArg() != 0 {
 		return usageError{message: "does not accept positional arguments; register instances with onderzeeer start <config> [name]"}
 	}
+	publicRead, err := webPublicReadEnabled()
+	if err != nil {
+		return err
+	}
 
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
@@ -115,7 +120,7 @@ func daemonCommand(args []string, stderr io.Writer, version string) error {
 	}
 	var webServer *webui.Server
 	if address := strings.TrimSpace(*webListen); address != "" {
-		webServer, err = webui.NewServer(address, webTokenPath(server.Path()), version, manager, logger)
+		webServer, err = webui.NewServer(address, webTokenPath(server.Path()), version, manager, logger, publicRead)
 		if err != nil {
 			_ = server.Close()
 			return err
@@ -138,7 +143,7 @@ func daemonCommand(args []string, stderr io.Writer, version string) error {
 
 	logger.Info("control daemon listening", "socket", server.Path(), "state_directory", statePath, "restored_instances", restoredCount)
 	if webServer != nil {
-		logger.Info("web dashboard listening", "address", webServer.Address(), "token_file", webServer.TokenPath())
+		logger.Info("web dashboard listening", "address", webServer.Address(), "token_file", webServer.TokenPath(), "public_read", publicRead)
 	}
 	serveStarted = true
 	if webServer == nil {
@@ -193,6 +198,8 @@ Usage:
 
 Starts the daemon; no existing onderzeeerd is required.
 The version command prints the version without starting the daemon.
+ONDERZEEER_WEB_PUBLIC_READ=true allows dashboard viewing without a token;
+start/stop actions always require the token. Unset or false requires login for all reads.
 
 Register instances separately with: onderzeeer start <config> [name]
 Registered instances and their queue databases persist in --state-dir,
@@ -205,6 +212,18 @@ ONDERZEEER_CONFIG is not used.`)
 
 func webListenDefault() string {
 	return strings.TrimSpace(os.Getenv("ONDERZEEER_WEB_LISTEN"))
+}
+
+func webPublicReadEnabled() (bool, error) {
+	value := strings.TrimSpace(os.Getenv("ONDERZEEER_WEB_PUBLIC_READ"))
+	if value == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, usageError{message: fmt.Sprintf("ONDERZEEER_WEB_PUBLIC_READ must be a boolean (true or false), got %q", value)}
+	}
+	return enabled, nil
 }
 
 func webTokenPath(socketPath string) string {

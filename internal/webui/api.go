@@ -37,13 +37,16 @@ const (
 var errQueueUninitialized = errors.New("queue database has not been created")
 
 type apiServer struct {
-	manager *control.Manager
-	logger  *slog.Logger
-	version string
+	manager    *control.Manager
+	logger     *slog.Logger
+	version    string
+	publicRead bool
 }
 
 type infoResponse struct {
-	Version string `json:"version"`
+	Version    string `json:"version"`
+	PublicRead bool   `json:"public_read"`
+	CanControl bool   `json:"can_control"`
 }
 
 type queueCounts struct {
@@ -153,7 +156,11 @@ type apiError struct {
 }
 
 func (api *apiServer) handleInfo(output http.ResponseWriter, request *http.Request) {
-	writeJSON(output, http.StatusOK, infoResponse{Version: api.version})
+	writeJSON(output, http.StatusOK, infoResponse{
+		Version:    api.version,
+		PublicRead: api.publicRead,
+		CanControl: request.Context().Value(authenticatedContextKey{}) == true,
+	})
 }
 
 func (api *apiServer) handleQueues(output http.ResponseWriter, request *http.Request) {

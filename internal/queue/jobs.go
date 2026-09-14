@@ -248,7 +248,10 @@ WHERE id = ? AND job_id = ? AND status = ?`,
 
 	var attempts, maxRetries int
 	if err := tx.QueryRowContext(ctx, `
-SELECT attempts, max_retries
+SELECT attempts - (
+    SELECT COUNT(*) FROM resource_wait_interruptions AS waits
+    JOIN runs ON runs.id = waits.run_id WHERE runs.job_id = jobs.id
+), max_retries
 FROM jobs
 WHERE id = ? AND status = ?`, jobID, StatusRunning).Scan(&attempts, &maxRetries); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -287,6 +290,40 @@ WHERE id = ? AND status = ?`,
 		return "", fmt.Errorf("queue: commit failure: %w", err)
 	}
 	return resultingStatus, nil
+}
+
+// InterruptResourceWait requeues a job canceled before acquiring a step's
+// reservation. Preserve prior step history and attempt numbering, but exempt
+// this interrupted run from the execution retry budget, even after a restart.
+func (s *Store) InterruptResourceWait(ctx context.Context, jobID, runID int64, reason string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("queue: begin interrupted resource wait: %w", err)
+	}
+	defer rollback(tx)
+	now := unixNano(s.timestamp())
+	result, err := tx.ExecContext(ctx, `
+UPDATE runs SET status = ?, error = ?, finished_at = ?
+WHERE id = ? AND job_id = ? AND status = ?`, StatusFailed, reason, now, runID, jobID, StatusRunning)
+	if err != nil {
+		return fmt.Errorf("queue: interrupt waiting run: %w", err)
+	}
+	if err := requireOneRow(result); err != nil {
+		return fmt.Errorf("queue: interrupt waiting run: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO resource_wait_interruptions (run_id) VALUES (?)`, runID); err != nil {
+		return fmt.Errorf("queue: exempt interrupted wait from retries: %w", err)
+	}
+	result, err = tx.ExecContext(ctx, `
+UPDATE jobs SET status = ?, available_at = ?, last_error = ?, updated_at = ?, finished_at = NULL
+WHERE id = ? AND status = ?`, StatusQueued, now, reason, now, jobID, StatusRunning)
+	if err != nil {
+		return fmt.Errorf("queue: requeue interrupted resource wait: %w", err)
+	}
+	if err := requireOneRow(result); err != nil {
+		return fmt.Errorf("queue: requeue interrupted resource wait: %w", err)
+	}
+	return tx.Commit()
 }
 
 // RecoverRunning marks interrupted history as failed and immediately requeues

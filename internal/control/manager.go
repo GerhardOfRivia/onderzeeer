@@ -20,6 +20,7 @@ import (
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/daemon"
+	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
 )
 
 const (
@@ -144,7 +145,10 @@ func NewManager(options Options) (*Manager, error) {
 	}
 	runner := options.Runner
 	if runner == nil {
-		runner = daemon.Run
+		resources := &resource.Coordinator{}
+		runner = func(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+			return daemon.RunWithResources(ctx, cfg, logger, resources)
+		}
 	}
 	idGenerator := options.IDGenerator
 	if idGenerator == nil {
