@@ -3,7 +3,7 @@
 OUTPUT ?= bin
 ONDERZEEER_OUTPUT ?= $(OUTPUT)/onderzeeer
 ONDERZEEERD_OUTPUT ?= $(OUTPUT)/onderzeeerd
-SEMVER ?= 1.1.1
+SEMVER ?= 1.1.2
 VERSION ?= $(SEMVER)-dev
 RELEASE_TAG ?= v$(SEMVER)
 LDFLAGS = -ldflags "-X main.Version=$(VERSION)"
