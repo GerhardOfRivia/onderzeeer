@@ -107,7 +107,7 @@ WHERE watch_name = ? AND path = ? AND fingerprint = ?`,
 	return job, false, nil
 }
 
-// Claim atomically reserves the oldest eligible queued job and creates its Run
+// Claim atomically reserves the earliest-added eligible job and creates its Run
 // record in the same transaction. ErrNoJob is returned when none is available.
 func (s *Store) Claim(ctx context.Context) (*Job, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -128,7 +128,7 @@ WHERE id = (
     SELECT id
     FROM jobs
     WHERE status = ? AND available_at <= ?
-    ORDER BY available_at, id
+    ORDER BY created_at, id
     LIMIT 1
 )
 RETURNING `+jobColumns,
@@ -162,6 +162,44 @@ VALUES (?, ?, ?, ?)`, job.ID, job.Attempts, StatusRunning, unixNano(now))
 	job.RunID = runID
 	job.Attempt = job.Attempts
 	return &job, nil
+}
+
+// MarkPending records that a claimed job is waiting for a resource reservation.
+func (s *Store) MarkPending(ctx context.Context, jobID, runID int64) error {
+	return s.transitionResourceWait(ctx, jobID, runID, StatusRunning, StatusPending)
+}
+
+// MarkRunning resumes a pending job after its resource reservation is acquired.
+func (s *Store) MarkRunning(ctx context.Context, jobID, runID int64) error {
+	return s.transitionResourceWait(ctx, jobID, runID, StatusPending, StatusRunning)
+}
+
+func (s *Store) transitionResourceWait(ctx context.Context, jobID, runID int64, from, to Status) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("queue: begin resource wait transition: %w", err)
+	}
+	defer rollback(tx)
+	result, err := tx.ExecContext(ctx, `
+UPDATE runs SET status = ?
+WHERE id = ? AND job_id = ? AND status = ?
+  AND NOT EXISTS (SELECT 1 FROM command_executions WHERE run_id = ? AND status = ?)`,
+		to, runID, jobID, from, runID, CommandRunning)
+	if err != nil {
+		return fmt.Errorf("queue: update waiting run: %w", err)
+	}
+	if err := requireOneRow(result); err != nil {
+		return fmt.Errorf("queue: update waiting run: %w", err)
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE jobs SET status = ?, updated_at = ? WHERE id = ? AND status = ?`,
+		to, unixNano(s.timestamp()), jobID, from)
+	if err != nil {
+		return fmt.Errorf("queue: update waiting job: %w", err)
+	}
+	if err := requireOneRow(result); err != nil {
+		return fmt.Errorf("queue: update waiting job: %w", err)
+	}
+	return tx.Commit()
 }
 
 // Succeed atomically completes a running run and its job.
@@ -237,8 +275,8 @@ WHERE run_id = ? AND status = ?`,
 	result, err := tx.ExecContext(ctx, `
 UPDATE runs
 SET status = ?, error = ?, finished_at = ?
-WHERE id = ? AND job_id = ? AND status = ?`,
-		StatusFailed, reason, unixNano(now), runID, jobID, StatusRunning)
+WHERE id = ? AND job_id = ? AND status IN (?, ?)`,
+		StatusFailed, reason, unixNano(now), runID, jobID, StatusRunning, StatusPending)
 	if err != nil {
 		return "", fmt.Errorf("queue: fail run: %w", err)
 	}
@@ -253,7 +291,7 @@ SELECT attempts - (
     JOIN runs ON runs.id = waits.run_id WHERE runs.job_id = jobs.id
 ), max_retries
 FROM jobs
-WHERE id = ? AND status = ?`, jobID, StatusRunning).Scan(&attempts, &maxRetries); err != nil {
+WHERE id = ? AND status IN (?, ?)`, jobID, StatusRunning, StatusPending).Scan(&attempts, &maxRetries); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("queue: fail job: %w", ErrInvalidTransition)
 		}
@@ -271,7 +309,7 @@ WHERE id = ? AND status = ?`, jobID, StatusRunning).Scan(&attempts, &maxRetries)
 	result, err = tx.ExecContext(ctx, `
 UPDATE jobs
 SET status = ?, available_at = ?, last_error = ?, updated_at = ?, finished_at = ?
-WHERE id = ? AND status = ?`,
+WHERE id = ? AND status IN (?, ?)`,
 		resultingStatus,
 		unixNano(availableAt),
 		reason,
@@ -279,6 +317,7 @@ WHERE id = ? AND status = ?`,
 		finishedAt,
 		jobID,
 		StatusRunning,
+		StatusPending,
 	)
 	if err != nil {
 		return "", fmt.Errorf("queue: fail job: %w", err)
@@ -304,7 +343,7 @@ func (s *Store) InterruptResourceWait(ctx context.Context, jobID, runID int64, r
 	now := unixNano(s.timestamp())
 	result, err := tx.ExecContext(ctx, `
 UPDATE runs SET status = ?, error = ?, finished_at = ?
-WHERE id = ? AND job_id = ? AND status = ?`, StatusFailed, reason, now, runID, jobID, StatusRunning)
+WHERE id = ? AND job_id = ? AND status = ?`, StatusFailed, reason, now, runID, jobID, StatusPending)
 	if err != nil {
 		return fmt.Errorf("queue: interrupt waiting run: %w", err)
 	}
@@ -316,7 +355,7 @@ WHERE id = ? AND job_id = ? AND status = ?`, StatusFailed, reason, now, runID, j
 	}
 	result, err = tx.ExecContext(ctx, `
 UPDATE jobs SET status = ?, available_at = ?, last_error = ?, updated_at = ?, finished_at = NULL
-WHERE id = ? AND status = ?`, StatusQueued, now, reason, now, jobID, StatusRunning)
+WHERE id = ? AND status = ?`, StatusQueued, now, reason, now, jobID, StatusPending)
 	if err != nil {
 		return fmt.Errorf("queue: requeue interrupted resource wait: %w", err)
 	}
@@ -327,7 +366,7 @@ WHERE id = ? AND status = ?`, StatusQueued, now, reason, now, jobID, StatusRunni
 }
 
 // RecoverRunning marks interrupted history as failed and immediately requeues
-// every RUNNING job. Recovery intentionally does not apply max_retries: a
+// every RUNNING or PENDING job. Recovery intentionally does not apply max_retries: a
 // process crash is ambiguous, so re-execution preserves at-least-once delivery.
 func (s *Store) RecoverRunning(ctx context.Context) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -339,6 +378,11 @@ func (s *Store) RecoverRunning(ctx context.Context) (int64, error) {
 	now := s.timestamp()
 	const reason = "interrupted by daemon restart"
 	if _, err := tx.ExecContext(ctx, `
+INSERT INTO resource_wait_interruptions (run_id)
+SELECT id FROM runs WHERE status = ?`, StatusPending); err != nil {
+		return 0, fmt.Errorf("queue: preserve pending retry budgets: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
 UPDATE command_executions
 SET status = ?, exit_code = -1, error = ?, finished_at = ?
 WHERE status = ?`, CommandFailed, reason, unixNano(now), CommandRunning); err != nil {
@@ -347,13 +391,13 @@ WHERE status = ?`, CommandFailed, reason, unixNano(now), CommandRunning); err !=
 	if _, err := tx.ExecContext(ctx, `
 UPDATE runs
 SET status = ?, error = ?, finished_at = ?
-WHERE status = ?`, StatusFailed, reason, unixNano(now), StatusRunning); err != nil {
+WHERE status IN (?, ?)`, StatusFailed, reason, unixNano(now), StatusRunning, StatusPending); err != nil {
 		return 0, fmt.Errorf("queue: recover runs: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE jobs
 SET status = ?, available_at = ?, last_error = ?, updated_at = ?, finished_at = NULL
-WHERE status = ?`, StatusQueued, unixNano(now), reason, unixNano(now), StatusRunning)
+WHERE status IN (?, ?)`, StatusQueued, unixNano(now), reason, unixNano(now), StatusRunning, StatusPending)
 	if err != nil {
 		return 0, fmt.Errorf("queue: recover jobs: %w", err)
 	}

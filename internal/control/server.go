@@ -38,9 +38,11 @@ var (
 // NewServer acquires the socket immediately, before instances are restored or
 // started, so a second daemon cannot race the first daemon's startup.
 type Server struct {
-	manager *Manager
-	logger  *slog.Logger
-	path    string
+	manager      *Manager
+	logger       *slog.Logger
+	path         string
+	startedAt    time.Time
+	systemConfig SystemConfig
 
 	mu         sync.Mutex
 	listener   net.Listener
@@ -122,11 +124,14 @@ func NewServer(socketPath string, manager *Manager, logger *slog.Logger) (*Serve
 		manager:    manager,
 		logger:     logger,
 		path:       path,
+		startedAt:  time.Now().UTC(),
 		listener:   listener,
 		lockFile:   lockFile,
 		socketInfo: socketInfo,
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/system", server.handleSystem)
+	mux.HandleFunc("POST /v1/system/purge", server.handleSystemPurge)
 	mux.HandleFunc("POST /v1/instances", server.handleStart)
 	mux.HandleFunc("GET /v1/instances", server.handleList)
 	mux.HandleFunc("GET /v1/instances/{selector}", server.handleGet)
@@ -134,6 +139,7 @@ func NewServer(socketPath string, manager *Manager, logger *slog.Logger) (*Serve
 	mux.HandleFunc("POST /v1/run", server.handleRun)
 	mux.HandleFunc("GET /v1/queues", server.handleQueueSelection)
 	mux.HandleFunc("GET /v1/queues/{selector}/{operation}", server.handleQueueRead)
+	mux.HandleFunc("DELETE /v1/queues/{selector}/jobs/{jobID}", server.handleJobRemove)
 	server.httpServer = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,

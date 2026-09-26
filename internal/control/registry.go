@@ -240,7 +240,7 @@ func (manager *Manager) registerRuntime(view Instance, identity string, cfg *con
 		ConfigIdentity: identity, ConfigPath: view.ConfigPath, ConfigHash: view.ConfigHash}
 	if cfg != nil {
 		for _, watch := range cfg.Watches {
-			known.WatchNames = append(known.WatchNames, watch.Name)
+			known.Watches = append(known.Watches, WatchSummary{Name: watch.Name, Path: watch.Path})
 		}
 	}
 	manager.knownQueues[known.Identity] = known

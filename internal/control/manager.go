@@ -510,9 +510,9 @@ func (manager *Manager) startManyContext(startContext context.Context, configPat
 		runtime.logger = manager.instanceLogger(runtime)
 		manager.instances[view.ID] = runtime
 		manager.names[view.Name] = view.ID
-		watchNames := make([]string, 0, len(item.candidate.config.Watches))
+		watches := make([]WatchSummary, 0, len(item.candidate.config.Watches))
 		for _, watch := range item.candidate.config.Watches {
-			watchNames = append(watchNames, watch.Name)
+			watches = append(watches, WatchSummary{Name: watch.Name, Path: watch.Path})
 		}
 		known, exists := manager.knownQueues[item.candidate.queueIdentity]
 		if !exists {
@@ -522,7 +522,7 @@ func (manager *Manager) startManyContext(startContext context.Context, configPat
 		known.ConfigIdentity = item.candidate.configIdentity
 		known.ConfigPath = item.candidate.configPath
 		known.ConfigHash = item.candidate.configHash
-		known.WatchNames = watchNames
+		known.Watches = watches
 		if item.candidate.databasePath != known.DatabasePath && !slices.Contains(known.DatabaseAliases, item.candidate.databasePath) {
 			known.DatabaseAliases = append(known.DatabaseAliases, item.candidate.databasePath)
 		}
@@ -554,7 +554,7 @@ func (manager *Manager) KnownQueues() []KnownQueue {
 	for _, known := range manager.knownQueues {
 		copy := known
 		copy.DatabaseAliases = append([]string(nil), known.DatabaseAliases...)
-		copy.WatchNames = append([]string(nil), known.WatchNames...)
+		copy.Watches = append([]WatchSummary(nil), known.Watches...)
 		queues = append(queues, copy)
 	}
 	manager.mu.Unlock()

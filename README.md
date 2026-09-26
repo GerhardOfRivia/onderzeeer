@@ -48,6 +48,10 @@ config filename when one is omitted. The daemon assigns each managed
 instance its own queue database; only standalone runs use `database.path`.
 Only daemon-managed instances appear in `ps`.
 
+`test` keeps watching until interrupted or a worker fails. A pipeline or queue
+error stops the standalone run with exit code 1 after persisting the attempt,
+even when retries remain. A normal signal shutdown exits with code 0.
+
 Config paths are always explicit; there is no automatic discovery or
 `ONDERZEEER_CONFIG` fallback. Options may appear before or after positional
 arguments. Use `--` for paths beginning with a dash, as in
@@ -187,6 +191,28 @@ The socket used by each daemon-backed command is selected in this order:
 Clients and daemon must use the same socket. Keep it private: access permits
 starting programs as the daemon user. Prefer one daemon per user.
 
+Inspect the running daemon's effective settings and file locations:
+
+```bash
+onderzeeer system
+onderzeeer system --purge
+```
+
+`system` reports the daemon version, PID, start time, log level, control socket,
+state directory, registry database, queue directory, lock files, web listener,
+token file location, public-read setting, and active/inactive queue counts.
+Settings come from the daemon, including its startup flags and environment;
+the daemon has no separate configuration file. Use `--socket` to select it.
+
+`--purge` permanently removes all exited and failed queue registrations and
+their databases, jobs, history, and captured output. Running and stopping
+instances are preserved. Config files and watched files remain untouched.
+Purged instances no longer restore on daemon restart; register their config
+again to create a fresh queue. A partial failure reports the affected queues
+and exits with code 1; failed removals can be retried. Once file removal begins,
+the retained registration is marked stopped so it cannot automatically resume
+with a partly removed database.
+
 ## optional web dashboard
 
 Enable the embedded dashboard with a loopback listener (disabled by default):
@@ -207,7 +233,21 @@ sudo cat /run/onderzeeer/onderzeeer.sock.web-token
 The dashboard shows known queues, job counts, attempts, commands, and captured
 output, including queues whose instances have stopped. It can restart known
 queues and stop active instances. Its header shows the daemon build version
-(`dev` when built without an override).
+(`dev` when built without an override). Each queue shows its watch folders below
+the instance name and status, with job search on the right and refresh above it. The queue API
+(`GET /api/v1/queues`) returns `watches` as objects with `name` and `path` fields;
+each path is the resolved folder from the registered configuration.
+Use the information button beside a queue to open its instance details in the
+left drawer, including its config path and hash. The selector below the job table
+supports 10, 25, 50, or 100 jobs per page. Captured
+output can be loaded once the job has succeeded or failed.
+
+Search filters the entire queue before pagination and matches literal text in
+file paths, watch names, job IDs (including `#123`), statuses, and error messages.
+Click a watch name in the table to filter by that watch. Active watch and status
+filters appear as removable tags above the search field and combine with the
+search text. Changing a filter returns to the first page; selecting another
+queue clears the filters. The jobs API accepts the same text as `search`.
 
 To allow anyone who can reach the dashboard to browse without a token, set:
 
@@ -248,15 +288,22 @@ onderzeeer queue incoming
 onderzeeer jobs incoming --status failed
 onderzeeer jobs incoming --watch incoming
 onderzeeer job incoming 42
+onderzeeer job incoming 42 --rm
 onderzeeer logs incoming 42
 ```
 
-`status` prints counts; `queue` lists queued and running jobs; `jobs` lists job
+`status` prints counts; `queue` lists queued, pending, and running jobs; `jobs` lists job
 history. `job` shows a job's runs and commands, and `logs` prints captured command
 stdout and stderr. These commands read through `onderzeeerd` and accept `--socket`.
 Stopped instances remain inspectable, even if their original YAML is gone.
 A config-directory path selects its registered queues; select one instance when
 a job ID exists in multiple queues.
+
+`job <instance-or-config> <id> --rm` deletes a queued or finished job and all of
+its run and command history, including captured output. Running and pending
+jobs must be stopped first. Removal leaves the source file untouched and clears
+its discovery record, so a later discovery may enqueue that file again. This
+also works with `--local`, which opens the selected database for writing.
 
 Use `--local` to inspect a standalone or legacy queue directly, without a daemon:
 
@@ -534,8 +581,9 @@ does not affect reservations held by others.
 A worker acquires the reservation immediately before executing the referencing
 step and releases it when execution returns, including failure, timeout, or
 cancellation. Requests are served in FIFO order. Waiting occupies a worker slot
-but does not start the step timeout or spend retries. Steps using different
-resources or no resources can run concurrently within each instance's worker
+and marks the job and its current run `PENDING`. They return to `RUNNING` after
+the reservation is acquired. Waiting does not start the step timeout or spend
+retries. Steps using different resources or no resources can run concurrently within each instance's worker
 limit. Logs record waiting, acquisition, release, and canceled waits.
 
 Canceling a waiting step removes its request and requeues the job. Its interrupted
@@ -555,7 +603,16 @@ external resource coordination.
 ## delivery and recovery
 
 SQLite persists jobs, retries, and execution history. On startup, unfinished
-runs are marked interrupted and jobs left `RUNNING` are immediately requeued.
+runs are marked interrupted and jobs left `RUNNING` or `PENDING` are immediately
+requeued. Interrupted pending runs do not spend the execution retry budget.
+Existing queue databases are upgraded automatically when opened for execution,
+preserving job IDs and history.
+
+Within each queue, workers claim eligible jobs by time added (`created_at`),
+oldest first, with job ID breaking ties. Retry availability determines when a
+job becomes eligible; it keeps its original time-added priority once eligible.
+Concurrent workers may finish in a different order, and shared resource
+reservations remain ordered by when each step requests them.
 
 Execution is **at least once**: a command completed just before a crash may run
 again after recovery, so pipelines should be idempotent. Stopping an instance

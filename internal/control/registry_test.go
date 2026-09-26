@@ -117,6 +117,10 @@ func TestRegisteredInstancesSurviveRestartWithStableIdentityAndSnapshots(t *test
 	// Both name and dashboard starts work without the original YAML.
 	var alphaQueue KnownQueue
 	for _, known := range restored.KnownQueues() {
+		wantWatches := []WatchSummary{{Name: strings.TrimSuffix(filepath.Base(known.ConfigPath), ".yaml"), Path: root}}
+		if !reflect.DeepEqual(known.Watches, wantWatches) {
+			t.Fatalf("restored watches = %+v, want %+v", known.Watches, wantWatches)
+		}
 		if known.ConfigPath == alpha {
 			alphaQueue = known
 		}

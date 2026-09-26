@@ -65,6 +65,16 @@ watches:
 	if _, err := store.Fail(context.Background(), claimed.ID, claimed.RunID, "exit 7", 0); err != nil {
 		t.Fatal(err)
 	}
+	if _, _, err := store.Enqueue(context.Background(), queue.EnqueueParams{WatchName: "incoming", Path: filepath.Join(watchPath, "pending.csv")}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.Claim(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkPending(context.Background(), pending.ID, pending.RunID); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +84,9 @@ watches:
 		args []string
 		want []string
 	}{
-		{"status", []string{"status", configPath}, []string{"TOTAL", "1", "FAILED"}},
+		{"status", []string{"status", configPath}, []string{"TOTAL", "2", "PENDING", "FAILED"}},
+		{"pending queue", []string{"queue", configPath}, []string{"PENDING", "pending.csv"}},
+		{"pending jobs", []string{"jobs", configPath, "--status", "pending"}, []string{"PENDING", "pending.csv"}},
 		{"jobs", []string{"jobs", configPath, "--status", "failed"}, []string{"FAILED", "incoming", job.Path}},
 		{"job", []string{"job", configPath, fmt.Sprint(job.ID)}, []string{"Job 1", "Run 1", "Command 1", "exit 7"}},
 		{"logs", []string{"logs", configPath, fmt.Sprint(job.ID)}, []string{"Run 1 / Command 1", "some output", "some error"}},
@@ -91,6 +103,18 @@ watches:
 				}
 			}
 		})
+	}
+	code, _, stderr := managedCLI(t, "job", configPath, fmt.Sprint(pending.ID), "--rm", "--local")
+	if code != 1 || !strings.Contains(stderr, "running or pending") {
+		t.Fatalf("removed pending job: %d, %s", code, stderr)
+	}
+	code, stdout, stderr := managedCLI(t, "job", configPath, fmt.Sprint(job.ID), "--rm", "--local")
+	if code != 0 || !strings.Contains(stdout, "Removed job") {
+		t.Fatalf("remove job: %d, %s", code, stderr)
+	}
+	code, _, _ = managedCLI(t, "job", configPath, fmt.Sprint(job.ID), "--local")
+	if code != 1 {
+		t.Fatalf("removed job still exists: exit %d", code)
 	}
 }
 

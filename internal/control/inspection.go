@@ -91,7 +91,7 @@ func (server *Server) handleQueueRead(output http.ResponseWriter, request *http.
 			writeAPIError(output, http.StatusBadRequest, "invalid_request", errors.New("positive limit and nonnegative offset required"))
 			return
 		}
-		result, err = store.ListJobs(ctx, queue.JobFilter{Status: queue.Status(values.Get("status")), WatchName: values.Get("watch"), Limit: limit, Offset: offset})
+		result, err = store.ListJobs(ctx, queue.JobFilter{Status: queue.Status(values.Get("status")), WatchName: values.Get("watch"), Search: values.Get("search"), Limit: limit, Offset: offset})
 	case "job", "runs", "commands":
 		id, parseErr := strconv.ParseInt(values.Get("id"), 10, 64)
 		if parseErr != nil || id <= 0 {
@@ -121,6 +121,54 @@ func (server *Server) handleQueueRead(output http.ResponseWriter, request *http.
 	writeJSON(output, http.StatusOK, result)
 }
 
+func (server *Server) handleJobRemove(output http.ResponseWriter, request *http.Request) {
+	// Serialize writable queue opens with purge so a removed database cannot
+	// be recreated between the existence check and the deletion.
+	if err := server.manager.acquireStartGate(request.Context()); err != nil {
+		writeManagerError(output, err, false)
+		return
+	}
+	defer server.manager.releaseStartGate()
+	id, err := strconv.ParseInt(request.PathValue("jobID"), 10, 64)
+	if err != nil || id <= 0 {
+		writeAPIError(output, http.StatusBadRequest, "invalid_request", errors.New("positive job id required"))
+		return
+	}
+	instance, err := server.manager.Get(request.PathValue("selector"))
+	if err != nil {
+		writeManagerError(output, err, false)
+		return
+	}
+	// Inspect first so removal never creates a missing queue database.
+	reader, err := queue.OpenReadOnlyContext(request.Context(), instance.DatabasePath)
+	if err == nil {
+		_, err = reader.GetJob(request.Context(), id)
+		reader.Close()
+	}
+	if err == nil {
+		var store *queue.Store
+		store, err = queue.Open(instance.DatabasePath)
+		if err == nil {
+			err = store.RemoveJob(request.Context(), id)
+			store.Close()
+		}
+	}
+	if err != nil {
+		status, code := http.StatusServiceUnavailable, "queue_unavailable"
+		if errors.Is(err, queue.ErrNotFound) {
+			status, code = http.StatusNotFound, "record_not_found"
+		}
+		if errors.Is(err, queue.ErrJobActive) {
+			status, code = http.StatusConflict, "job_active"
+		}
+		writeAPIError(output, status, code, err)
+		return
+	}
+	writeJSON(output, http.StatusOK, struct {
+		ID int64 `json:"id"`
+	}{id})
+}
+
 // SelectQueues resolves names, IDs, and config paths entirely in the daemon.
 func (client *Client) SelectQueues(ctx context.Context, selector string) ([]Instance, error) {
 	var response instancesResponse
@@ -128,7 +176,7 @@ func (client *Client) SelectQueues(ctx context.Context, selector string) ([]Inst
 	return response.Instances, err
 }
 
-// QueueReader exposes read-only history over the control socket. It owns its
+// QueueReader exposes history and explicit job removal over the control socket. It owns its
 // client, so Close can release all idle connections after an inspection command.
 type QueueReader struct {
 	client *Client
@@ -178,7 +226,7 @@ func (reader *QueueReader) Counts(ctx context.Context) (queue.QueueCounts, error
 
 func (reader *QueueReader) ListJobs(ctx context.Context, filter queue.JobFilter) ([]queue.Job, error) {
 	var result []queue.Job
-	values := url.Values{"status": {string(filter.Status)}, "watch": {filter.WatchName}, "limit": {strconv.Itoa(filter.Limit)}, "offset": {strconv.Itoa(filter.Offset)}}
+	values := url.Values{"status": {string(filter.Status)}, "watch": {filter.WatchName}, "search": {filter.Search}, "limit": {strconv.Itoa(filter.Limit)}, "offset": {strconv.Itoa(filter.Offset)}}
 	err := reader.read(ctx, "jobs", values, &result)
 	return result, err
 }
@@ -199,4 +247,20 @@ func (reader *QueueReader) ListCommands(ctx context.Context, id int64) ([]queue.
 	var result []queue.CommandExecution
 	err := reader.read(ctx, "commands", url.Values{"id": {strconv.FormatInt(id, 10)}}, &result)
 	return result, err
+}
+
+func (reader *QueueReader) RemoveJob(ctx context.Context, id int64) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err := reader.client.doJSON(ctx, http.MethodDelete, "/v1/queues/"+url.PathEscape(reader.id)+"/jobs/"+strconv.FormatInt(id, 10), nil, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Code {
+		case "record_not_found":
+			return fmt.Errorf("%w: %s", queue.ErrNotFound, apiErr.Message)
+		case "job_active":
+			return fmt.Errorf("%w: %s", queue.ErrJobActive, apiErr.Message)
+		}
+	}
+	return err
 }

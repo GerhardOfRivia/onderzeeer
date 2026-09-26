@@ -51,6 +51,7 @@ type infoResponse struct {
 
 type queueCounts struct {
 	Queued    int64 `json:"queued"`
+	Pending   int64 `json:"pending"`
 	Running   int64 `json:"running"`
 	Succeeded int64 `json:"succeeded"`
 	Failed    int64 `json:"failed"`
@@ -58,16 +59,16 @@ type queueCounts struct {
 }
 
 type queueSummary struct {
-	ID             string            `json:"id"`
-	DisplayName    string            `json:"display_name"`
-	ConfigPath     string            `json:"config_path"`
-	ConfigHash     string            `json:"config_hash"`
-	DatabasePath   string            `json:"database_path"`
-	Watches        []string          `json:"watches"`
-	DatabaseState  string            `json:"database_state"`
-	Counts         queueCounts       `json:"counts"`
-	ActiveInstance *control.Instance `json:"active_instance,omitempty"`
-	Error          string            `json:"error,omitempty"`
+	ID             string                 `json:"id"`
+	DisplayName    string                 `json:"display_name"`
+	ConfigPath     string                 `json:"config_path"`
+	ConfigHash     string                 `json:"config_hash"`
+	DatabasePath   string                 `json:"database_path"`
+	Watches        []control.WatchSummary `json:"watches"`
+	DatabaseState  string                 `json:"database_state"`
+	Counts         queueCounts            `json:"counts"`
+	ActiveInstance *control.Instance      `json:"active_instance,omitempty"`
+	Error          string                 `json:"error,omitempty"`
 }
 
 type queuesResponse struct {
@@ -182,7 +183,7 @@ func (api *apiServer) handleQueues(output http.ResponseWriter, request *http.Req
 			ConfigPath:    item.ConfigPath,
 			ConfigHash:    item.ConfigHash,
 			DatabasePath:  item.DatabasePath,
-			Watches:       append([]string(nil), item.WatchNames...),
+			Watches:       append([]control.WatchSummary{}, item.Watches...),
 			DatabaseState: "unavailable",
 			Error:         "Queue summary was not read before the dashboard deadline",
 		}
@@ -495,7 +496,7 @@ func jobFilter(values url.Values) (queue.JobFilter, int, int, error) {
 	if statusText := strings.TrimSpace(values.Get("status")); statusText != "" {
 		status := queue.Status(strings.ToUpper(statusText))
 		switch status {
-		case queue.StatusQueued, queue.StatusRunning, queue.StatusSucceeded, queue.StatusFailed:
+		case queue.StatusQueued, queue.StatusPending, queue.StatusRunning, queue.StatusSucceeded, queue.StatusFailed:
 			filter.Status = status
 		default:
 			return filter, 0, 0, fmt.Errorf("unknown job status %q", statusText)
@@ -504,6 +505,10 @@ func jobFilter(values url.Values) (queue.JobFilter, int, int, error) {
 	filter.WatchName = strings.TrimSpace(values.Get("watch"))
 	if len(filter.WatchName) > 256 {
 		return filter, 0, 0, errors.New("watch filter is too long")
+	}
+	filter.Search = strings.TrimSpace(values.Get("search"))
+	if len(filter.Search) > 1024 {
+		return filter, 0, 0, errors.New("search filter is too long")
 	}
 	limit, err := queryInteger(values, "limit", defaultJobLimit)
 	if err != nil || limit <= 0 || limit > maximumJobLimit {
@@ -578,7 +583,7 @@ func validateMutation(output http.ResponseWriter, request *http.Request) error {
 
 func toCounts(counts queue.QueueCounts) queueCounts {
 	return queueCounts{
-		Queued: counts.Queued, Running: counts.Running, Succeeded: counts.Succeeded,
+		Queued: counts.Queued, Pending: counts.Pending, Running: counts.Running, Succeeded: counts.Succeeded,
 		Failed: counts.Failed, Total: counts.Total,
 	}
 }

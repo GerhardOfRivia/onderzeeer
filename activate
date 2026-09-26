@@ -1,7 +1,78 @@
 #!/bin/bash
-export ONDERZEEER_GO_DIR="$(pwd)/.go"
+# Source this file in Bash: source /path/to/onderzeeer/activate
 
-export PATH="$ONDERZEEER_GO_DIR/toolchain/bin:$PATH"
-export GOPATH="$ONDERZEEER_GO_DIR/gopath"
-export GOMODCACHE="$ONDERZEEER_GO_DIR/modcache"
-export GOCACHE="$ONDERZEEER_GO_DIR/buildcache"
+if [ -z "${BASH_VERSION:-}" ]; then
+    printf 'onderzeeer: activate requires Bash.\n' >&2
+    return 1 2>/dev/null || exit 1
+fi
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    printf 'onderzeeer: use "source ./activate" to update your current shell.\n' >&2
+    exit 1
+fi
+
+_onderzeeer_activate() {
+    local go_dir name
+    go_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/.go" || return 1
+
+    if [[ ! -d "$go_dir" ]]; then
+        printf 'onderzeeer: missing Go directory: %s\n' "$go_dir" >&2
+        printf 'Extract a Go toolchain into %s/toolchain, then source activate again.\n' "$go_dir" >&2
+        return 1
+    fi
+    if [[ ! -x "$go_dir/toolchain/bin/go" ]]; then
+        printf 'onderzeeer: missing executable Go toolchain: %s/toolchain/bin/go\n' "$go_dir" >&2
+        return 1
+    fi
+
+    # Check and prepare everything before changing the shell environment.
+    mkdir -p -- "$go_dir/gopath" "$go_dir/modcache" "$go_dir/buildcache" || return 1
+    if [[ "${_ONDERZEEER_ACTIVE-}" == "$go_dir" ]]; then
+        return 0
+    fi
+    if [[ -n "${_ONDERZEEER_ACTIVE-}" ]]; then
+        onderzeeer_deactivate
+    fi
+
+    # Keep unset variables distinct from variables with empty values.
+    declare -gA _ONDERZEEER_OLD_ENV=()
+    for name in PATH GOPATH GOMODCACHE GOCACHE ONDERZEEER_GO_DIR PS1; do
+        if [[ "${!name+x}" ]]; then
+            _ONDERZEEER_OLD_ENV["$name"]="${!name}"
+        fi
+    done
+
+    # A separate name leaves Python virtualenv's deactivate function available.
+    onderzeeer_deactivate() {
+        local name
+        for name in PATH GOPATH GOMODCACHE GOCACHE ONDERZEEER_GO_DIR PS1; do
+            if [[ "${_ONDERZEEER_OLD_ENV[$name]+x}" ]]; then
+                printf -v "$name" '%s' "${_ONDERZEEER_OLD_ENV[$name]}"
+            else
+                unset "$name"
+            fi
+        done
+        unset _ONDERZEEER_OLD_ENV _ONDERZEEER_ACTIVE
+        unset -f onderzeeer_deactivate
+        hash -r
+    }
+
+    export ONDERZEEER_GO_DIR="$go_dir"
+    export GOPATH="$go_dir/gopath"
+    export GOMODCACHE="$go_dir/modcache"
+    export GOCACHE="$go_dir/buildcache"
+    export PATH="$go_dir/toolchain/bin:$go_dir/gopath/bin:${PATH-}"
+    if [[ "${PS1+x}" ]]; then
+        PS1="(onderzeeer) $PS1"
+    fi
+    _ONDERZEEER_ACTIVE="$go_dir"
+    hash -r
+}
+
+if _onderzeeer_activate; then
+    unset -f _onderzeeer_activate
+    return 0
+else
+    unset -f _onderzeeer_activate
+    return 1
+fi

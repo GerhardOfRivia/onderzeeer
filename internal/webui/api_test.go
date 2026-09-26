@@ -92,9 +92,13 @@ func TestQueueAPIListsFiltersAndDetails(t *testing.T) {
 		summary.ActiveInstance == nil {
 		t.Fatalf("queue summary = %+v", summary)
 	}
+	wantWatch := control.WatchSummary{Name: "incoming", Path: filepath.Join(filepath.Dir(known.ConfigPath), "incoming-watch")}
+	if len(summary.Watches) != 1 || summary.Watches[0] != wantWatch {
+		t.Fatalf("queue watches = %+v, want %+v", summary.Watches, wantWatch)
+	}
 
 	response = webRequest(t, server.Client(), http.MethodGet,
-		server.URL+"/api/v1/queues/"+summary.ID+"/jobs?status=queued&limit=1", testWebToken, "")
+		server.URL+"/api/v1/queues/"+summary.ID+"/jobs?status=queued&watch="+summary.Watches[0].Name+"&limit=1", testWebToken, "")
 	var jobs jobsResponse
 	decodeResponse(t, response, http.StatusOK, &jobs)
 	if len(jobs.Jobs) != 1 || jobs.Jobs[0].Status != queue.StatusQueued || jobs.Limit != 1 {
@@ -166,6 +170,12 @@ func TestQueueAPIMutationsRequireSameOriginAndRetainStoppedQueue(t *testing.T) {
 	if len(manager.List(false)) != 0 || len(manager.KnownQueues()) != 1 {
 		t.Fatalf("stopped queue disappeared: active=%+v queues=%+v", manager.List(false), manager.KnownQueues())
 	}
+	response = webRequest(t, server.Client(), http.MethodGet, server.URL+"/api/v1/queues", testWebToken, "")
+	var stopped queuesResponse
+	decodeResponse(t, response, http.StatusOK, &stopped)
+	if len(stopped.Queues) != 1 || len(stopped.Queues[0].Watches) != 1 || stopped.Queues[0].Watches[0] != known.Watches[0] {
+		t.Fatalf("stopped queue lost watch details: %+v", stopped.Queues)
+	}
 
 	root := filepath.Dir(known.ConfigPath)
 	writeWebConfig(t, root, "incoming", filepath.Join(root, "moved.db"))
@@ -177,6 +187,51 @@ func TestQueueAPIMutationsRequireSameOriginAndRetainStoppedQueue(t *testing.T) {
 	writeWebConfig(t, root, "incoming", known.DatabasePath)
 	response = webMutation(t, server, "/api/v1/queues/"+queueID(known.Identity)+"/start")
 	decodeResponse(t, response, http.StatusCreated, &instanceResponse{})
+}
+
+func TestQueueAPIReportsPendingResourceWaits(t *testing.T) {
+	t.Parallel()
+	manager, known, _, _ := webTestQueue(t, true)
+	store, err := queue.Open(known.DatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	job, err := store.Claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkPending(ctx, job.ID, job.RunID); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := newHandler(manager, testLogger(), testWebToken, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(path string, result any) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil)
+		request.Header.Set("Authorization", "Bearer "+testWebToken)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		decodeResponse(t, response.Result(), http.StatusOK, result)
+	}
+	var queues queuesResponse
+	get("/api/v1/queues", &queues)
+	if len(queues.Queues) != 1 || queues.Queues[0].Counts.Pending != 1 || queues.Queues[0].Counts.Running != 0 || queues.Queues[0].Counts.Total != 2 {
+		t.Fatalf("pending counts: %+v", queues.Queues)
+	}
+	var jobs jobsResponse
+	get("/api/v1/queues/"+queueID(known.Identity)+"/jobs?status=pending", &jobs)
+	if len(jobs.Jobs) != 1 || jobs.Jobs[0].Status != queue.StatusPending {
+		t.Fatalf("pending jobs: %+v", jobs)
+	}
+	var detail jobResponse
+	get(fmt.Sprintf("/api/v1/queues/%s/jobs/%d", queueID(known.Identity), job.ID), &detail)
+	if detail.Job.Status != queue.StatusPending || len(detail.Runs) != 1 || detail.Runs[0].Status != queue.StatusPending {
+		t.Fatalf("pending detail: %+v", detail)
+	}
 }
 
 func TestQueueAPIIisolatesMissingDatabase(t *testing.T) {

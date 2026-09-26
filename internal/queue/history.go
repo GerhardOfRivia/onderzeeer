@@ -16,12 +16,14 @@ func (s *Store) Counts(ctx context.Context) (QueueCounts, error) {
 	err := s.db.QueryRowContext(ctx, `
 SELECT
     COALESCE(SUM(CASE WHEN status = 'QUEUED' THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN status = 'SUCCEEDED' THEN 1 ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END), 0),
     COUNT(*)
 FROM jobs`).Scan(
 		&counts.Queued,
+		&counts.Pending,
 		&counts.Running,
 		&counts.Succeeded,
 		&counts.Failed,
@@ -76,6 +78,20 @@ func (s *Store) ListJobs(ctx context.Context, filter JobFilter) ([]Job, error) {
 	if filter.WatchName != "" {
 		where = append(where, "watch_name = ?")
 		args = append(args, filter.WatchName)
+	}
+	if search := strings.TrimSpace(filter.Search); search != "" {
+		// instr treats %, _, quotes, and other punctuation as literal text.
+		// Apply search before LIMIT/OFFSET so pagination includes every match.
+		where = append(where, `(instr(lower(path), lower(?)) > 0
+OR instr(lower(watch_name), lower(?)) > 0
+OR instr(lower(status), lower(?)) > 0
+OR instr(lower(last_error), lower(?)) > 0
+OR instr(CAST(id AS TEXT), ?) > 0)`)
+		idSearch := strings.TrimPrefix(search, "#")
+		if idSearch == "" {
+			idSearch = search
+		}
+		args = append(args, search, search, search, search, idSearch)
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -335,7 +351,7 @@ WHERE id = ?`, id).Scan(&output.ID, &output.RunID, &output.Stdout, &output.Stder
 
 func validStatus(status Status) bool {
 	switch status {
-	case StatusQueued, StatusRunning, StatusSucceeded, StatusFailed:
+	case StatusQueued, StatusPending, StatusRunning, StatusSucceeded, StatusFailed:
 		return true
 	default:
 		return false

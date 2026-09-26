@@ -3,7 +3,7 @@
 OUTPUT ?= bin
 ONDERZEEER_OUTPUT ?= $(OUTPUT)/onderzeeer
 ONDERZEEERD_OUTPUT ?= $(OUTPUT)/onderzeeerd
-SEMVER ?= 1.1.2
+SEMVER ?= 1.2.2
 VERSION ?= $(SEMVER)-dev
 RELEASE_TAG ?= v$(SEMVER)
 LDFLAGS = -ldflags "-X main.Version=$(VERSION)"
@@ -50,11 +50,19 @@ web:
 	docker run --rm --user $$(id -u):$$(id -g) --mount type=bind,src=$(CURDIR),dst=/workspace -w /workspace/web node:22-bookworm-slim /bin/sh -lc 'npm ci && npm run build'
 	rm -rf ./web/node_modules ./web/tsconfig.app.tsbuildinfo ./web/tsconfig.node.tsbuildinfo
 
-test:
-	@echo "Running tests..."
+fmt:
 	go fmt ./...
+
+vet:
 	go vet ./...
-	go test -v ./...
+
+test:
+	go test ./...
+
+race:
+	go test -race ./...
+
+check: fmt vet test race
 
 release:
 	@test -z "$$(git status --porcelain)" || { echo "Refusing to release with a dirty working tree."; exit 1; }

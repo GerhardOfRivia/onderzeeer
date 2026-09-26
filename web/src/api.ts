@@ -50,10 +50,11 @@ export const api = {
   info: (token: string, signal?: AbortSignal) => request<InfoResponse>('/api/v1/info', token, { signal }),
   queues: (token: string, signal?: AbortSignal) => request<QueuesResponse>('/api/v1/queues', token, { signal }),
   instances: (token: string, signal?: AbortSignal) => request<InstancesResponse>('/api/v1/instances?all=true', token, { signal }),
-  jobs: (token: string, queueID: string, status: string, watch: string, offset: number, signal?: AbortSignal) => {
-    const query = new URLSearchParams({ limit: '50', offset: String(offset) })
+  jobs: (token: string, queueID: string, status: string, watch: string, search: string, offset: number, limit: number, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: String(limit), offset: String(offset) })
     if (status) query.set('status', status)
     if (watch) query.set('watch', watch)
+    if (search) query.set('search', search)
     return request<JobsResponse>(`/api/v1/queues/${queueID}/jobs?${query}`, token, { signal })
   },
   job: (token: string, queueID: string, jobID: number, signal?: AbortSignal) =>

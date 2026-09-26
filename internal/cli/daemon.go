@@ -126,6 +126,15 @@ func daemonCommand(args []string, stderr io.Writer, version string) error {
 			return err
 		}
 	}
+	systemConfig := control.SystemConfig{
+		Version: version, LogLevel: strings.ToLower(level.String()),
+		WebListen: strings.TrimSpace(*webListen), WebPublicRead: publicRead,
+	}
+	if webServer != nil {
+		systemConfig.WebAddress = webServer.Address()
+		systemConfig.WebTokenPath, _ = filepath.Abs(webServer.TokenPath())
+	}
+	server.SetSystemConfig(systemConfig)
 	serveStarted := false
 	defer func() {
 		// Serve owns network and socket cleanup once entered. Before that point,

@@ -30,6 +30,8 @@ var ErrUnknownWatch = errors.New("worker: unknown watch")
 // this interface; keeping it narrow also makes worker behavior easy to test.
 type Store interface {
 	Claim(context.Context) (*queue.Job, error)
+	MarkPending(context.Context, int64, int64) error
+	MarkRunning(context.Context, int64, int64) error
 	StartCommand(context.Context, queue.CommandStart) (int64, error)
 	CompleteCommand(context.Context, int64, queue.CommandResult) error
 	Succeed(context.Context, int64, int64) error
@@ -107,6 +109,8 @@ func cloneMounts(mounts []config.MountConfig) []config.MountConfig {
 
 // Options configures a worker pool.
 type Options struct {
+	// StopOnError makes foreground tests stop after the first worker failure.
+	StopOnError        bool
 	Resources          *resource.Coordinator
 	Workers            int
 	RetryDelay         time.Duration
@@ -117,6 +121,7 @@ type Options struct {
 
 // Pool runs a fixed number of queue consumers.
 type Pool struct {
+	stopOnError        bool
 	resources          *resource.Coordinator
 	store              Store
 	resolver           PipelineResolver
@@ -166,6 +171,7 @@ func New(store Store, resolver PipelineResolver, commandExecutor executor.Execut
 	}
 
 	return &Pool{
+		stopOnError:        options.StopOnError,
 		resources:          options.Resources,
 		store:              store,
 		resolver:           resolver,
@@ -184,51 +190,70 @@ func (pool *Pool) Run(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("worker: context is required")
 	}
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	failures := make(chan error, pool.workers)
 
 	var workers sync.WaitGroup
 	workers.Add(pool.workers)
 	for number := 1; number <= pool.workers; number++ {
 		go func(workerNumber int) {
 			defer workers.Done()
-			pool.consume(ctx, workerNumber)
+			if err := pool.consume(runContext, workerNumber); err != nil {
+				failures <- err
+				cancel()
+			}
 		}(number)
 	}
 	workers.Wait()
+	close(failures)
+	for err := range failures {
+		return err
+	}
 	return nil
 }
 
-func (pool *Pool) consume(ctx context.Context, workerNumber int) {
+func (pool *Pool) consume(ctx context.Context, workerNumber int) error {
 	logger := pool.logger.With("worker", workerNumber)
 	for {
 		if ctx.Err() != nil {
-			return
+			return nil
 		}
 
 		job, err := pool.store.Claim(ctx)
 		if err != nil {
 			if !errors.Is(err, queue.ErrNoJob) && !errors.Is(err, context.Canceled) {
 				logger.Error("claim job", "error", err)
+				if pool.stopOnError && ctx.Err() == nil {
+					return fmt.Errorf("claim job: %w", err)
+				}
 			}
 			if !pool.waitForPoll(ctx) {
-				return
+				return nil
 			}
 			continue
 		}
 		if job == nil {
 			logger.Error("claim job", "error", "store returned a nil job without an error")
+			if pool.stopOnError {
+				return errors.New("worker: store returned a nil job without an error")
+			}
 			if !pool.waitForPoll(ctx) {
-				return
+				return nil
 			}
 			continue
 		}
 
-		logger.Info("running job", "job_id", job.ID, "run_id", job.RunID, "attempt", job.Attempt)
+		logger.Info("claimed job", "job_id", job.ID, "run_id", job.RunID, "attempt", job.Attempt)
 		if err := pool.processJob(ctx, job); err != nil {
 			var waiting *resourceWaitError
 			if errors.As(err, &waiting) {
 				logger.Info("job resource wait interrupted", "job_id", job.ID, "run_id", job.RunID, "error", err)
 			} else {
 				logger.Error("job attempt failed", "job_id", job.ID, "run_id", job.RunID, "error", err)
+			}
+			if pool.stopOnError && ctx.Err() == nil {
+				return fmt.Errorf("job %d: %w", job.ID, err)
 			}
 		} else {
 			logger.Info("job succeeded", "job_id", job.ID, "run_id", job.RunID)
@@ -292,6 +317,12 @@ func (pool *Pool) processCommand(ctx context.Context, job *queue.Job, index int,
 	if expanded.Resources != "" {
 		logger := pool.logger.With("resource", expanded.Resources, "watch", job.WatchName,
 			"step", index+1, "command", expanded.Name, "job_id", job.ID, "run_id", job.RunID)
+		persistContext, cancel := pool.persistenceContext()
+		err := pool.store.MarkPending(persistContext, job.ID, job.RunID)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("mark job pending: %w", err)
+		}
 		logger.Info("waiting for resource")
 		unlock, err := pool.resources.Acquire(ctx, expanded.Resources)
 		if err != nil {
@@ -306,8 +337,14 @@ func (pool *Pool) processCommand(ctx context.Context, job *queue.Job, index int,
 				logger.Info("resource released")
 			})
 		}
+		defer release()
+		persistContext, cancel = pool.persistenceContext()
+		err = pool.store.MarkRunning(persistContext, job.ID, job.RunID)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("resume pending job: %w", err)
+		}
 	}
-	defer release()
 	command := commandFromConfig(expanded)
 	commandID, err := pool.store.StartCommand(ctx, queue.CommandStart{
 		RunID:      job.RunID,

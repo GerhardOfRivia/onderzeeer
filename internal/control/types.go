@@ -74,13 +74,19 @@ type RunOptions struct {
 type KnownQueue struct {
 	// Identity is the canonical database path used for stable internal
 	// references. ConfigPath retains the lexical path used to load the config.
-	Identity        string   `json:"-"`
-	ConfigIdentity  string   `json:"-"`
-	ConfigPath      string   `json:"config_path"`
-	ConfigHash      string   `json:"config_hash"`
-	DatabasePath    string   `json:"database_path"`
-	DatabaseAliases []string `json:"-"`
-	WatchNames      []string `json:"watch_names"`
+	Identity        string         `json:"-"`
+	ConfigIdentity  string         `json:"-"`
+	ConfigPath      string         `json:"config_path"`
+	ConfigHash      string         `json:"config_hash"`
+	DatabasePath    string         `json:"database_path"`
+	DatabaseAliases []string       `json:"-"`
+	Watches         []WatchSummary `json:"watches"`
+}
+
+// WatchSummary identifies a configured filesystem source without its pipeline.
+type WatchSummary struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 // Active reports whether an instance still owns its configuration and queue

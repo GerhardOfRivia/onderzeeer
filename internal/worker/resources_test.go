@@ -3,8 +3,10 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +102,9 @@ func TestResourceWaitPrecedesHistoryAndTimeout(t *testing.T) {
 	if len(store.started) != 0 || store.failedRun != 0 {
 		t.Error("waiting consumed an execution or failed attempt")
 	}
+	if len(store.resourceStates) != 1 || store.resourceStates[0] != queue.StatusPending {
+		t.Errorf("waiting state = %v, want PENDING", store.resourceStates)
+	}
 	store.mu.Unlock()
 	if strings.Contains(logs.String(), "running command") {
 		t.Fatal("logged execution while waiting")
@@ -107,6 +112,9 @@ func TestResourceWaitPrecedesHistoryAndTimeout(t *testing.T) {
 	release()
 	if err := resourceResult(t, done); err != nil {
 		t.Fatal(err)
+	}
+	if len(store.resourceStates) != 2 || store.resourceStates[1] != queue.StatusRunning {
+		t.Fatalf("acquired state = %v, want PENDING then RUNNING", store.resourceStates)
 	}
 	text := logs.String()
 	previous := -1
@@ -227,7 +235,20 @@ func TestSharedPoolsAllowIndependentStepsAndReleaseBetweenSteps(t *testing.T) {
 
 type resourceFailingStore struct {
 	recordingStore
-	startErr, completeErr error
+	startErr, completeErr, pendingErr, runningErr error
+}
+
+func (s *resourceFailingStore) MarkPending(ctx context.Context, jobID, runID int64) error {
+	if s.pendingErr != nil {
+		return s.pendingErr
+	}
+	return s.recordingStore.MarkPending(ctx, jobID, runID)
+}
+func (s *resourceFailingStore) MarkRunning(ctx context.Context, jobID, runID int64) error {
+	if s.runningErr != nil {
+		return s.runningErr
+	}
+	return s.recordingStore.MarkRunning(ctx, jobID, runID)
 }
 
 func (s *resourceFailingStore) StartCommand(ctx context.Context, start queue.CommandStart) (int64, error) {
@@ -244,12 +265,18 @@ func (s *resourceFailingStore) CompleteCommand(ctx context.Context, id int64, re
 }
 
 func TestReservationsReleasedOnEveryExecutionExit(t *testing.T) {
-	for _, mode := range []string{"success", "failure", "timeout", "cancel", "start persistence", "result persistence", "panic"} {
+	for _, mode := range []string{"success", "failure", "timeout", "cancel", "pending persistence", "resume persistence", "start persistence", "result persistence", "panic"} {
 		t.Run(mode, func(t *testing.T) {
 			var c resource.Coordinator
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			store := &resourceFailingStore{}
+			if mode == "pending persistence" {
+				store.pendingErr = errors.New("pending failed")
+			}
+			if mode == "resume persistence" {
+				store.runningErr = errors.New("resume failed")
+			}
 			if mode == "start persistence" {
 				store.startErr = errors.New("start failed")
 			}
@@ -289,6 +316,70 @@ func TestReservationsReleasedOnEveryExecutionExit(t *testing.T) {
 				t.Fatalf("reservation leaked: %v", err)
 			}
 			next()
+		})
+	}
+}
+
+func TestResourceWaitPersistsPendingBetweenPipelineSteps(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprint("canceled=", canceled), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			store, err := queue.Open(filepath.Join(t.TempDir(), "queue.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if _, _, err := store.Enqueue(ctx, queue.EnqueueParams{WatchName: "incoming", Path: "/input"}); err != nil {
+				t.Fatal(err)
+			}
+			job, err := store.Claim(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var c resource.Coordinator
+			release, err := c.Acquire(ctx, "gpu")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			p, logs := resourcePool(t, &c, store, resourceExecutorFunc(func(ctx context.Context, _ executor.Command) (executor.Result, error) {
+				current, err := store.GetJob(ctx, job.ID)
+				if err != nil || current.Status != queue.StatusRunning {
+					return executor.Result{}, fmt.Errorf("execution state = %+v, %v", current, err)
+				}
+				return executor.Result{}, nil
+			}), config.CommandConfig{Name: "prepare", Program: "unused"}, config.CommandConfig{Name: "locked", Program: "unused", Resources: "gpu"})
+			done := make(chan error, 1)
+			go func() { done <- p.processJob(ctx, job) }()
+			select {
+			case <-logs.waiting:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			current, err := store.GetJob(ctx, job.ID)
+			if err != nil || current.Status != queue.StatusPending {
+				t.Fatalf("waiting state = %+v, %v", current, err)
+			}
+			commands, err := store.ListCommands(ctx, job.RunID)
+			if err != nil || len(commands) != 1 || commands[0].Status != queue.CommandSucceeded {
+				t.Fatalf("waiting history = %+v, %v", commands, err)
+			}
+			want := queue.StatusSucceeded
+			if canceled {
+				cancel()
+				want = queue.StatusQueued
+			} else {
+				release()
+			}
+			err = resourceResult(t, done)
+			if canceled && !errors.Is(err, context.Canceled) || !canceled && err != nil {
+				t.Fatalf("result = %v", err)
+			}
+			current, err = store.GetJob(context.Background(), job.ID)
+			if err != nil || current.Status != want {
+				t.Fatalf("final state = %+v, %v; want %s", current, err, want)
+			}
 		})
 	}
 }

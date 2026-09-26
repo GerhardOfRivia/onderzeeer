@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
+	"github.com/GerhardOfRivia/onderzeeer/internal/control"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 )
 
@@ -92,6 +93,8 @@ func RunVersion(args []string, stdout, stderr io.Writer, version string) int {
 		err = startCommand(args[1:], stdout, stderr)
 	case "ps":
 		err = psCommand(args[1:], stdout, stderr)
+	case "system":
+		err = systemCommand(args[1:], stdout, stderr)
 	case "stop":
 		err = stopCommand(args[1:], stdout, stderr)
 	case "status":
@@ -147,13 +150,14 @@ func statusCommand(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(w, "DATABASE\t%s\n", stores[0].config.Database.Path)
 		fmt.Fprintf(w, "TOTAL\t%d\n", counts.Total)
 		fmt.Fprintf(w, "QUEUED\t%d\n", counts.Queued)
+		fmt.Fprintf(w, "PENDING\t%d\n", counts.Pending)
 		fmt.Fprintf(w, "RUNNING\t%d\n", counts.Running)
 		fmt.Fprintf(w, "SUCCEEDED\t%d\n", counts.Succeeded)
 		fmt.Fprintf(w, "FAILED\t%d\n", counts.Failed)
 		return w.Flush()
 	}
 
-	fmt.Fprintln(w, "CONFIG\tDATABASE\tTOTAL\tQUEUED\tRUNNING\tSUCCEEDED\tFAILED")
+	fmt.Fprintln(w, "CONFIG\tDATABASE\tTOTAL\tQUEUED\tPENDING\tRUNNING\tSUCCEEDED\tFAILED")
 	var total queue.QueueCounts
 	for _, source := range stores {
 		counts, err := source.store.Counts(ctx)
@@ -162,15 +166,16 @@ func statusCommand(args []string, stdout, stderr io.Writer) error {
 		}
 		total.Total += counts.Total
 		total.Queued += counts.Queued
+		total.Pending += counts.Pending
 		total.Running += counts.Running
 		total.Succeeded += counts.Succeeded
 		total.Failed += counts.Failed
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\n",
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\n",
 			source.path, source.config.Database.Path, counts.Total, counts.Queued,
-			counts.Running, counts.Succeeded, counts.Failed)
+			counts.Pending, counts.Running, counts.Succeeded, counts.Failed)
 	}
-	fmt.Fprintf(w, "TOTAL\t-\t%d\t%d\t%d\t%d\t%d\n",
-		total.Total, total.Queued, total.Running, total.Succeeded, total.Failed)
+	fmt.Fprintf(w, "TOTAL\t-\t%d\t%d\t%d\t%d\t%d\t%d\n",
+		total.Total, total.Queued, total.Pending, total.Running, total.Succeeded, total.Failed)
 	return w.Flush()
 }
 
@@ -205,7 +210,12 @@ func queueCommand(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("list queue %s: %w", source.path, err)
 		}
+		pending, err := source.store.ListJobs(ctx, queue.JobFilter{Status: queue.StatusPending, WatchName: *watchName, Limit: *limit})
+		if err != nil {
+			return fmt.Errorf("list queue %s: %w", source.path, err)
+		}
 		jobs = appendListedJobs(jobs, source.path, queued)
+		jobs = appendListedJobs(jobs, source.path, pending)
 		jobs = appendListedJobs(jobs, source.path, running)
 	}
 	sortListedJobs(jobs)
@@ -218,7 +228,7 @@ func queueCommand(args []string, stdout, stderr io.Writer) error {
 func jobsCommand(args []string, stdout, stderr io.Writer) error {
 	flags := newFlagSet("jobs", stderr, "onderzeeer jobs <config> [--status status] [--watch name] [--limit n]")
 	inspection := inspectionFlags(flags)
-	statusText := flags.String("status", "", "queued, running, succeeded, or failed")
+	statusText := flags.String("status", "", "queued, pending, running, succeeded, or failed")
 	watchName := flags.String("watch", "", "filter by watch name")
 	limit := flags.Int("limit", 100, "maximum jobs to display")
 	if err := parseFlags(flags, args); err != nil {
@@ -261,8 +271,9 @@ func jobsCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func jobCommand(args []string, stdout, stderr io.Writer) error {
-	flags := newFlagSet("job", stderr, "onderzeeer job <config> <id>")
+	flags := newFlagSet("job", stderr, "onderzeeer job <config-or-instance> <id> [--rm]")
 	inspection := inspectionFlags(flags)
+	remove := flags.Bool("rm", false, "remove the job and its history (running and pending jobs must be stopped first)")
 	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
@@ -280,6 +291,25 @@ func jobCommand(args []string, stdout, stderr io.Writer) error {
 	source, job, err := findJob(ctx, stores, id)
 	if err != nil {
 		return err
+	}
+	if *remove {
+		if *inspection.local {
+			store, err := queue.Open(source.config.Database.Path)
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+			err = store.RemoveJob(ctx, id)
+			if err != nil {
+				return err
+			}
+		} else {
+			if err := source.store.(*control.QueueReader).RemoveJob(ctx, id); err != nil {
+				return err
+			}
+		}
+		fmt.Fprintf(stdout, "Removed job %d and its history.\n", id)
+		return nil
 	}
 	runs, err := source.store.ListRuns(ctx, id)
 	if err != nil {
@@ -566,7 +596,7 @@ func parseStatus(value string) (queue.Status, error) {
 	}
 	status := queue.Status(strings.ToUpper(strings.TrimSpace(value)))
 	switch status {
-	case queue.StatusQueued, queue.StatusRunning, queue.StatusSucceeded, queue.StatusFailed:
+	case queue.StatusQueued, queue.StatusPending, queue.StatusRunning, queue.StatusSucceeded, queue.StatusFailed:
 		return status, nil
 	default:
 		return "", usageError{message: fmt.Sprintf("unknown job status %q", value)}
@@ -677,13 +707,14 @@ No onderzeeerd required:
   onderzeeer test <config>
 
 Requires a running onderzeeerd:
+  onderzeeer system [--purge] [--socket path]
   onderzeeer start <config-or-instance> [name] [--socket path]
   onderzeeer ps [--all] [--socket path]
   onderzeeer stop [--socket path] <id-or-name> [id-or-name ...]
   onderzeeer status <instance-or-config> [--socket path]
   onderzeeer queue <instance-or-config> [--socket path]
   onderzeeer jobs <instance-or-config> [--status status] [--watch name] [--socket path]
-  onderzeeer job <instance-or-config> <id> [--socket path]
+  onderzeeer job <instance-or-config> <id> [--rm] [--socket path]
   onderzeeer logs <instance-or-config> <id> [--socket path]
   Start the daemon separately with: onderzeeerd`)
 }

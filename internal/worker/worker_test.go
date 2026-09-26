@@ -654,12 +654,27 @@ type recordingStore struct {
 	failedRun       int64
 	failure         string
 	interruptedWait bool
+	resourceStates  []queue.Status
 	retryDelay      time.Duration
 	failStatus      queue.Status
 }
 
 func (store *recordingStore) Claim(context.Context) (*queue.Job, error) {
 	return nil, queue.ErrNoJob
+}
+
+func (store *recordingStore) MarkPending(context.Context, int64, int64) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.resourceStates = append(store.resourceStates, queue.StatusPending)
+	return nil
+}
+
+func (store *recordingStore) MarkRunning(context.Context, int64, int64) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.resourceStates = append(store.resourceStates, queue.StatusRunning)
+	return nil
 }
 
 func (store *recordingStore) InterruptResourceWait(_ context.Context, _, _ int64, _ string) error {

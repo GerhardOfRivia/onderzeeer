@@ -233,13 +233,16 @@ function Dashboard({
   onUnlock: () => void
 }) {
   const canControl = access.can_control
-  const [tab, setTab] = useState<'queues' | 'instances'>('queues')
   const [queues, setQueues] = useState<QueueSummary[] | null>(null)
   const [instances, setInstances] = useState<Instance[] | null>(null)
   const [selectedQueueID, setSelectedQueueID] = useState('')
   const [status, setStatus] = useState<'' | JobStatus>('')
   const [watch, setWatch] = useState('')
+  const [search, setSearch] = useState('')
+  const [searchFilter, setSearchFilter] = useState('')
   const [offset, setOffset] = useState(0)
+  const [pageSize, setPageSize] = useState(50)
+  const [instanceQueueID, setInstanceQueueID] = useState('')
   const [jobs, setJobs] = useState<JobsResponse | null>(null)
   const [selectedJobID, setSelectedJobID] = useState<number | null>(null)
   const [jobDetail, setJobDetail] = useState<JobResponse | null>(null)
@@ -314,31 +317,31 @@ function Dashboard({
   }, [queues, selectedQueueID])
 
   const selectedQueue = queues?.find((queue) => queue.id === selectedQueueID) ?? null
+  const instanceQueue = queues?.find((queue) => queue.id === instanceQueueID) ?? null
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchFilter(search.trim()), 250)
+    return () => window.clearTimeout(timer)
+  }, [search])
 
   const refreshJobs = useCallback(async () => {
-    if (tab !== 'queues') {
-      jobsController.current?.abort()
-      jobsController.current = null
-      jobsRequestKey.current = ''
-      return
-    }
-    if (!selectedQueueID || selectedQueue?.database_state !== 'ready') {
+    if (!selectedQueueID || selectedQueue?.database_state !== 'ready' || search.trim() !== searchFilter) {
       jobsController.current?.abort()
       jobsController.current = null
       jobsRequestKey.current = ''
       setJobs(null)
       return
     }
-    const requestKey = `${selectedQueueID}\u0000${status}\u0000${watch}\u0000${offset}`
+    const requestKey = JSON.stringify([selectedQueueID, status, watch, searchFilter, offset, pageSize])
     if (jobsController.current) {
-      if (jobsRequestKey.current === requestKey) return
+      if (!jobsController.current.signal.aborted && jobsRequestKey.current === requestKey) return
       jobsController.current.abort()
     }
     const controller = new AbortController()
     jobsController.current = controller
     jobsRequestKey.current = requestKey
     try {
-      const result = await api.jobs(token, selectedQueueID, status, watch, offset, controller.signal)
+      const result = await api.jobs(token, selectedQueueID, status, watch, searchFilter, offset, pageSize, controller.signal)
       if (controller.signal.aborted) return
       setJobs(result)
       setJobsError('')
@@ -352,7 +355,7 @@ function Dashboard({
         jobsRequestKey.current = ''
       }
     }
-  }, [handleError, offset, selectedQueue?.database_state, selectedQueueID, status, tab, token, watch])
+  }, [handleError, offset, pageSize, search, searchFilter, selectedQueue?.database_state, selectedQueueID, status, token, watch])
 
   useEffect(() => {
     setJobs(null)
@@ -410,7 +413,7 @@ function Dashboard({
   }, [refreshDetail, selectedJobID, selectedQueueID])
 
   useEffect(() => {
-    if (selectedJobID === null || !jobDetail || !['QUEUED', 'RUNNING'].includes(jobDetail.job.status)) return
+    if (selectedJobID === null || !jobDetail || !['QUEUED', 'PENDING', 'RUNNING'].includes(jobDetail.job.status)) return
     const interval = window.setInterval(() => {
       if (!document.hidden) void refreshDetail()
     }, 2500)
@@ -425,10 +428,11 @@ function Dashboard({
   }, [])
 
   const totals = useMemo(() => {
-    const result: QueueCounts = { total: 0, queued: 0, running: 0, succeeded: 0, failed: 0 }
+    const result: QueueCounts = { total: 0, queued: 0, pending: 0, running: 0, succeeded: 0, failed: 0 }
     for (const queue of queues ?? []) {
       result.total += queue.counts.total
       result.queued += queue.counts.queued
+      result.pending += queue.counts.pending
       result.running += queue.counts.running
       result.succeeded += queue.counts.succeeded
       result.failed += queue.counts.failed
@@ -443,6 +447,8 @@ function Dashboard({
     setSelectedQueueID(id)
     setStatus('')
     setWatch('')
+    setSearch('')
+    setSearchFilter('')
     setOffset(0)
     setJobs(null)
     setJobsError('')
@@ -458,10 +464,19 @@ function Dashboard({
   }
 
   const changeWatch = (nextWatch: string) => {
+    if (nextWatch === watch) return
     jobsController.current?.abort()
     setJobs(null)
     setJobsError('')
     setWatch(nextWatch)
+    setOffset(0)
+  }
+
+  const changeSearch = (nextSearch: string) => {
+    jobsController.current?.abort()
+    setJobs(null)
+    setJobsError('')
+    setSearch(nextSearch)
     setOffset(0)
   }
 
@@ -470,6 +485,14 @@ function Dashboard({
     setJobs(null)
     setJobsError('')
     setOffset(nextOffset)
+  }
+
+  const changePageSize = (nextSize: number) => {
+    jobsController.current?.abort()
+    setJobs(null)
+    setJobsError('')
+    setPageSize(nextSize)
+    setOffset(0)
   }
 
   const performAction = async (kind: 'start' | 'stop', id: string) => {
@@ -491,7 +514,9 @@ function Dashboard({
   }
 
   const loadOutput = async (commandID: number) => {
-    if (!selectedQueueID) return
+    if (!selectedQueueID || !jobDetail || jobDetail.job.id !== selectedJobID || !isFinished(jobDetail.job.status)) return
+    const command = jobDetail.runs.flatMap((run) => run.commands).find((item) => item.id === commandID)
+    if (!command || !isFinished(command.status)) return
     outputControllers.current.get(commandID)?.abort()
     const controller = new AbortController()
     outputControllers.current.set(commandID, controller)
@@ -510,6 +535,7 @@ function Dashboard({
   }
 
   const closeJob = useCallback(() => setSelectedJobID(null), [])
+  const closeInstances = useCallback(() => setInstanceQueueID(''), [])
 
   return (
     <div className="app-shell">
@@ -521,10 +547,6 @@ function Dashboard({
             <span className="daemon-version">Version {access.version || 'unavailable'}</span>
           </div>
         </div>
-        <nav className="topnav" aria-label="Primary">
-          <button className={tab === 'queues' ? 'active' : ''} aria-current={tab === 'queues' ? 'page' : undefined} onClick={() => setTab('queues')}>Queues</button>
-          <button className={tab === 'instances' ? 'active' : ''} aria-current={tab === 'instances' ? 'page' : undefined} onClick={() => setTab('instances')}>Instances</button>
-        </nav>
         <div className="topbar-actions">
           <ThemeControl theme={theme} onChange={onThemeChange} />
           <span className={`connection-state ${refreshError ? 'offline' : lastUpdated ? 'online' : 'connecting'}`}>
@@ -554,8 +576,8 @@ function Dashboard({
       <main className="workspace">
         <section className="page-intro">
           <div>
-            <p className="eyebrow">{tab === 'queues' ? 'Durable work' : 'Runtime history'}</p>
-            <h1>{tab === 'queues' ? 'Every queue, one view.' : 'Instance activity.'}</h1>
+            <p className="eyebrow">Durable work</p>
+            <h1>Every queue, one view.</h1>
           </div>
           <div className="update-block">
             <span>Last sync</span>
@@ -564,51 +586,63 @@ function Dashboard({
           </div>
         </section>
 
-        {tab === 'queues' ? (
-          <>
-            <section className="metrics" aria-label="Queue totals">
-              <Metric label="All jobs" value={totals.total} tone="ink" />
-              <Metric label="Queued" value={totals.queued} tone="queued" />
-              <Metric label="Running" value={totals.running} tone="running" />
-              <Metric label="Failed" value={totals.failed} tone="failed" />
-            </section>
+        <section className="metrics" aria-label="Queue totals">
+          <Metric label="All jobs" value={totals.total} tone="ink" />
+          <Metric label="Queued" value={totals.queued} tone="queued" />
+          <Metric label="Pending" value={totals.pending} tone="pending" />
+          <Metric label="Running" value={totals.running} tone="running" />
+          <Metric label="Failed" value={totals.failed} tone="failed" />
+        </section>
 
-            {queues === null ? (
-              <DashboardSkeleton />
-            ) : queues.length === 0 ? (
-              <EmptyState title="No queues registered" copy="Register a config with onderzeeer start. Its queue and instance will remain available after daemon restarts." />
-            ) : (
-              <section className="queue-workspace">
-                <QueueRail
-                  queues={queues}
-                  selectedID={selectedQueueID}
-                  actionID={actionID}
-                  canControl={canControl}
-                  onSelect={changeQueue}
-                  onAction={performAction}
-                />
-                {selectedQueue && (
-                  <QueuePanel
-                    queue={selectedQueue}
-                    jobs={jobs}
-                    error={jobsError}
-                    status={status}
-                    watch={watch}
-                    offset={offset}
-                    onStatus={changeStatus}
-                    onWatch={changeWatch}
-                    onOffset={changeOffset}
-                    onRefresh={() => void refreshJobs()}
-                    onSelectJob={setSelectedJobID}
-                  />
-                )}
-              </section>
-            )}
-          </>
+        {queues === null ? (
+          <DashboardSkeleton />
+        ) : queues.length === 0 ? (
+          <EmptyState title="No queues registered" copy="Register a config with onderzeeer start. Its queue and instance will remain available after daemon restarts." />
         ) : (
-          <InstancesPanel instances={instances} actionID={actionID} canControl={canControl} onStop={(id) => void performAction('stop', id)} />
+          <section className="queue-workspace">
+            <QueueRail
+              queues={queues}
+              selectedID={selectedQueueID}
+              actionID={actionID}
+              canControl={canControl}
+              onSelect={changeQueue}
+              onAction={performAction}
+              onInstances={(id) => { setSelectedJobID(null); setInstanceQueueID(id) }}
+            />
+            {selectedQueue && (
+              <QueuePanel
+                queue={selectedQueue}
+                jobs={jobs}
+                error={jobsError}
+                status={status}
+                watch={watch}
+                search={search}
+                offset={offset}
+                pageSize={pageSize}
+                onStatus={changeStatus}
+                onWatch={changeWatch}
+                onSearch={changeSearch}
+                onOffset={changeOffset}
+                onPageSize={changePageSize}
+                onRefresh={() => void refreshJobs()}
+                onSelectJob={setSelectedJobID}
+              />
+            )}
+          </section>
         )}
       </main>
+
+      {instanceQueue && (
+        <InstanceDrawer
+          queue={instanceQueue}
+          instances={instances?.filter((instance) => instance.database_path === instanceQueue.database_path || instance.config_path === instanceQueue.config_path) ?? null}
+          actionID={actionID}
+          canControl={canControl}
+          actionError={actionError}
+          onStop={(id) => void performAction('stop', id)}
+          onClose={closeInstances}
+        />
+      )}
 
       {selectedJobID !== null && selectedQueue && (
         <JobDrawer
@@ -632,6 +666,7 @@ function QueueRail({
   canControl,
   onSelect,
   onAction,
+  onInstances,
 }: {
   queues: QueueSummary[]
   selectedID: string
@@ -639,6 +674,7 @@ function QueueRail({
   canControl: boolean
   onSelect: (id: string) => void
   onAction: (kind: 'start' | 'stop', id: string) => void
+  onInstances: (id: string) => void
 }) {
   return (
     <aside className="queue-rail" aria-label="Configured queues">
@@ -656,7 +692,7 @@ function QueueRail({
                 ? 'Queue not initialized'
                 : 'Queue unavailable'
           return (
-            <article className={`queue-card ${selectedID === queue.id ? 'selected' : ''}`} key={queue.id} title={queue.config_path}>
+            <article className={`queue-card ${selectedID === queue.id ? 'selected' : ''}`} key={queue.id}>
               <button className="queue-select" onClick={() => onSelect(queue.id)} aria-pressed={selectedID === queue.id}>
                 <span className={`queue-orb ${active ? 'live' : ''}`} aria-hidden="true" />
                 <span className="queue-card-copy">
@@ -665,14 +701,17 @@ function QueueRail({
                 </span>
                 <span className="queue-total">{queue.counts.total}</span>
               </button>
-              {canControl && <button
+              <div className="queue-card-actions">
+                <button className="mini-action" onClick={() => onInstances(queue.id)} aria-label={`View instance information for ${queue.display_name}`} title="Instance information">ⓘ</button>
+                {canControl && <button
                 className={`mini-action ${active ? 'stop' : ''}`}
                 onClick={() => onAction(active ? 'stop' : 'start', actionKey)}
                 disabled={Boolean(actionID) || instanceState === 'stopping'}
                 aria-label={`${active ? 'Stop' : 'Start'} ${queue.display_name}`}
               >
                 {actionID === actionKey ? '…' : instanceState === 'stopping' ? '…' : active ? '■' : '▶'}
-              </button>}
+                </button>}
+              </div>
             </article>
           )
         })}
@@ -687,10 +726,14 @@ function QueuePanel({
   error,
   status,
   watch,
+  search,
   offset,
+  pageSize,
   onStatus,
   onWatch,
+  onSearch,
   onOffset,
+  onPageSize,
   onRefresh,
   onSelectJob,
 }: {
@@ -699,46 +742,54 @@ function QueuePanel({
   error: string
   status: '' | JobStatus
   watch: string
+  search: string
   offset: number
+  pageSize: number
   onStatus: (status: '' | JobStatus) => void
   onWatch: (watch: string) => void
+  onSearch: (search: string) => void
   onOffset: (offset: number) => void
+  onPageSize: (size: number) => void
   onRefresh: () => void
   onSelectJob: (id: number) => void
 }) {
   return (
     <section className="queue-panel" aria-labelledby="queue-title">
       <header className="queue-header">
-        <div>
-          <div className="queue-title-line">
-            <h2 id="queue-title">{queue.display_name}</h2>
-            <StatusPill status={queue.active_instance?.state ?? 'stopped'} />
-          </div>
-          <p title={queue.config_path}>{queue.config_path}</p>
+        <div className="queue-title-line">
+          <h2 id="queue-title">{queue.display_name}</h2>
+          <StatusPill status={queue.active_instance?.state ?? 'stopped'} />
         </div>
-        <div className="hash-block" title={queue.config_hash}>
-          <span>Config</span>
-          <code>{queue.config_hash.slice(0, 10)}</code>
+        <div className="queue-tools">
+          <button className="icon-button" onClick={onRefresh} aria-label="Refresh jobs">↻</button>
+        </div>
+        <div className="queue-watch-folders">
+          <span className="queue-path-label">{queue.watches.length === 1 ? 'Watch folder' : 'Watch folders'}</span>
+          {queue.watches.map((source) => (
+            <div className="queue-watch-folder" key={source.name}>
+              {queue.watches.length > 1 && <span className="watch-tag">{source.name}</span>}
+              <code title={source.path}>{source.path}</code>
+            </div>
+          ))}
+        </div>
+        <div className="queue-search">
+          {(watch || status) && (
+            <div className="job-filter-tags" aria-label="Active job filters">
+              {status && <button className="job-filter-tag" onClick={() => onStatus('')} aria-label={`Remove status filter ${status}`}><span>Status: {status.toLowerCase()}</span><span aria-hidden="true">×</span></button>}
+              {watch && <button className="job-filter-tag" onClick={() => onWatch('')} aria-label={`Remove watch filter ${watch}`}><span>Watch: {watch}</span><span aria-hidden="true">×</span></button>}
+            </div>
+          )}
+          <input type="search" aria-label="Search jobs" placeholder="Search jobs…" maxLength={1024} value={search} onChange={(event) => onSearch(event.target.value)} title="Search file paths, watch names, job IDs, statuses, and errors" />
         </div>
       </header>
 
       <div className="queue-count-strip">
         <CountButton label="All" value={queue.counts.total} active={!status} onClick={() => onStatus('')} />
         <CountButton label="Queued" value={queue.counts.queued} active={status === 'QUEUED'} onClick={() => onStatus('QUEUED')} />
+        <CountButton label="Pending" value={queue.counts.pending} active={status === 'PENDING'} onClick={() => onStatus('PENDING')} />
         <CountButton label="Running" value={queue.counts.running} active={status === 'RUNNING'} onClick={() => onStatus('RUNNING')} />
         <CountButton label="Succeeded" value={queue.counts.succeeded} active={status === 'SUCCEEDED'} onClick={() => onStatus('SUCCEEDED')} />
         <CountButton label="Failed" value={queue.counts.failed} active={status === 'FAILED'} onClick={() => onStatus('FAILED')} />
-      </div>
-
-      <div className="table-tools">
-        <label>
-          <span>Watch</span>
-          <select value={watch} onChange={(event) => onWatch(event.target.value)}>
-            <option value="">All watches</option>
-            {queue.watches.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
-        </label>
-        <button className="icon-button" onClick={onRefresh} aria-label="Refresh jobs">↻</button>
       </div>
 
       {queue.database_state !== 'ready' ? (
@@ -754,16 +805,10 @@ function QueuePanel({
       ) : jobs.jobs.length === 0 ? (
         <>
           <EmptyState
-            title={status || watch ? 'No matching jobs' : 'No jobs recorded'}
-            copy={offset > 0 ? 'This page is now empty; return to newer jobs.' : status || watch ? 'Try a different status or watch filter.' : 'Matching files will appear here when they are discovered.'}
+            title={status || watch || search.trim() ? 'No matching jobs' : 'No jobs recorded'}
+            copy={offset > 0 ? 'This page is now empty; return to newer jobs.' : status || watch || search.trim() ? 'Try another search or remove a filter.' : 'Matching files will appear here when they are discovered.'}
             compact
           />
-          {offset > 0 && (
-            <footer className="pagination">
-              <span>Empty page</span>
-              <div><button onClick={() => onOffset(Math.max(0, offset - jobs.limit))}>← Newer</button></div>
-            </footer>
-          )}
         </>
       ) : (
         <>
@@ -792,7 +837,7 @@ function QueuePanel({
                         )}
                       </button>
                     </td>
-                    <td><code className="watch-tag">{job.watch_name}</code></td>
+                    <td><button className="watch-tag watch-filter" aria-label={`Filter by watch ${job.watch_name}`} aria-pressed={watch === job.watch_name} onClick={() => onWatch(job.watch_name)}>{job.watch_name}</button></td>
                     <td>{job.attempts}<span className="muted"> / {job.max_retries + 1}</span></td>
                     <td>{relativeTime(job.updated_at)}</td>
                   </tr>
@@ -800,97 +845,28 @@ function QueuePanel({
               </tbody>
             </table>
           </div>
-          <footer className="pagination">
-            <span>{offset + 1}–{offset + jobs.jobs.length}</span>
-            <div>
-              <button disabled={offset === 0} onClick={() => onOffset(Math.max(0, offset - jobs.limit))}>← Newer</button>
-              <button disabled={!jobs.has_more} onClick={() => onOffset(offset + jobs.limit)}>Older →</button>
-            </div>
-          </footer>
         </>
       )}
+      <footer className="pagination">
+        <label>
+          <span>Jobs per page</span>
+          <select value={pageSize} onChange={(event) => onPageSize(Number(event.target.value))}>
+            {[10, 25, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </label>
+        <div className="pagination-navigation">
+          <span>{jobs ? jobs.jobs.length ? `${offset + 1}–${offset + jobs.jobs.length}` : 'No jobs' : '—'}</span>
+          <button disabled={offset === 0 || !jobs} onClick={() => onOffset(Math.max(0, offset - pageSize))}>← Newer</button>
+          <button disabled={!jobs?.has_more} onClick={() => onOffset(offset + pageSize)}>Older →</button>
+        </div>
+      </footer>
     </section>
   )
 }
 
-function InstancesPanel({
-  instances,
-  actionID,
-  canControl,
-  onStop,
-}: {
-  instances: Instance[] | null
-  actionID: string
-  canControl: boolean
-  onStop: (id: string) => void
-}) {
-  if (instances === null) return <TableSkeleton />
-  if (instances.length === 0) {
-    return <EmptyState title="No instance history" copy="Start a configured queue to create its first runtime instance." />
-  }
-  return (
-    <section className="instances-card">
-      <div className="section-label"><span>Registered instances</span><b>{instances.length}</b></div>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr><th>State</th><th>Instance</th><th>Configuration</th><th>Started</th><th>Duration</th>{canControl && <th />}</tr>
-          </thead>
-          <tbody>
-            {instances.map((instance) => (
-              <tr key={instance.id}>
-                <td><StatusPill status={instance.state} />{instance.desired_state && <small className="cell-subtitle">Desired: {instance.desired_state}</small>}</td>
-                <td>
-                  <strong>{instance.name}</strong>
-                  <small className="cell-subtitle">{instance.id}</small>
-                  {instance.error && <small className="cell-error" title={instance.error}>{instance.error}</small>}
-                </td>
-                <td><span className="path-cell" title={instance.config_path}>{instance.config_path}</span></td>
-                <td>{formatDate(instance.started_at)}</td>
-                <td>{duration(instance.started_at, instance.finished_at)}</td>
-                {canControl && <td>
-                  {(['running', 'stopping'].includes(instance.state) || instance.desired_state === 'running') && (
-                    <button className="button button-danger button-small" disabled={Boolean(actionID) || instance.state === 'stopping'} onClick={() => onStop(instance.id)}>
-                      {instance.state === 'stopping' ? 'Stopping' : actionID === instance.id ? 'Working…' : 'Stop'}
-                    </button>
-                  )}
-                </td>}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="retention-note">Instances resume after daemon restarts unless explicitly stopped. Queue and execution history remain durable.</p>
-    </section>
-  )
-}
-
-function JobDrawer({
-  queue,
-  detail,
-  error,
-  outputs,
-  onLoadOutput,
-  onClose,
-}: {
-  queue: QueueSummary
-  detail: JobResponse | null
-  error: string
-  outputs: Record<number, OutputState>
-  onLoadOutput: (commandID: number) => void
-  onClose: () => void
-}) {
+function useDrawer(onClose: () => void) {
   const dialogRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
-  const initializedRuns = useRef(false)
-  const [expandedRuns, setExpandedRuns] = useState<Set<number>>(() => new Set())
-
-  useEffect(() => {
-    if (!detail || initializedRuns.current || detail.runs.length === 0) return
-    initializedRuns.current = true
-    setExpandedRuns(new Set([detail.runs[detail.runs.length - 1].id]))
-  }, [detail])
-
   useEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const previousOverflow = document.body.style.overflow
@@ -932,6 +908,88 @@ function JobDrawer({
       previouslyFocused?.focus()
     }
   }, [onClose])
+  return { dialogRef, closeRef }
+}
+
+function InstanceDrawer({ queue, instances, actionID, canControl, actionError, onStop, onClose }: {
+  queue: QueueSummary
+  instances: Instance[] | null
+  actionID: string
+  canControl: boolean
+  actionError: string
+  onStop: (id: string) => void
+  onClose: () => void
+}) {
+  const { dialogRef, closeRef } = useDrawer(onClose)
+  return (
+    <div className="drawer-backdrop drawer-backdrop-left" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside ref={dialogRef} className="instance-drawer" role="dialog" aria-modal="true" aria-labelledby="instance-detail-title">
+        <header className="drawer-header">
+          <div>
+            <p className="eyebrow">Instance information</p>
+            <h2 id="instance-detail-title">{queue.display_name}</h2>
+          </div>
+          <button ref={closeRef} className="close-button" onClick={onClose} aria-label="Close instance information">×</button>
+        </header>
+        <div className="drawer-body">
+          {actionError && <p className="inline-warning" role="alert">{actionError}</p>}
+          {instances === null ? <DetailSkeleton /> : instances.length === 0 ? (
+            <EmptyState title="No instance history" copy="Start this queue to create an instance." compact />
+          ) : instances.map((instance) => (
+            <section className="instance-summary" key={instance.id}>
+              <div className="instance-summary-title"><h3>{instance.name}</h3><StatusPill status={instance.state} /></div>
+              <dl>
+                <Detail label="Instance ID" value={instance.id} />
+                <Detail label="Desired state" value={instance.desired_state ?? '—'} />
+                <Detail label="Created" value={formatDate(instance.created_at)} />
+                <Detail label="Started" value={formatDate(instance.started_at)} />
+                <Detail label="Finished" value={formatDate(instance.finished_at)} />
+                <Detail label="Duration" value={duration(instance.started_at, instance.finished_at)} />
+              </dl>
+              <div className="path-block"><span>Config</span><code>{instance.config_path}</code></div>
+              <div className="path-block"><span>Config hash</span><code>{instance.config_hash}</code></div>
+              <div className="path-block"><span>Database</span><code>{instance.database_path}</code></div>
+              {instance.error && <div className="error-block"><strong>Instance error</strong><pre>{instance.error}</pre></div>}
+              {canControl && (['running', 'stopping'].includes(instance.state) || instance.desired_state === 'running') && (
+                <button className="button button-danger button-small" disabled={Boolean(actionID) || instance.state === 'stopping'} onClick={() => onStop(instance.id)}>
+                  {instance.state === 'stopping' ? 'Stopping' : actionID === instance.id ? 'Working…' : 'Stop instance'}
+                </button>
+              )}
+            </section>
+          ))}
+          <p className="retention-note">Instances resume after daemon restarts unless explicitly stopped. Queue and execution history remain durable.</p>
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+function JobDrawer({
+  queue,
+  detail,
+  error,
+  outputs,
+  onLoadOutput,
+  onClose,
+}: {
+  queue: QueueSummary
+  detail: JobResponse | null
+  error: string
+  outputs: Record<number, OutputState>
+  onLoadOutput: (commandID: number) => void
+  onClose: () => void
+}) {
+  const { dialogRef, closeRef } = useDrawer(onClose)
+  const initializedRuns = useRef(false)
+  const [expandedRuns, setExpandedRuns] = useState<Set<number>>(() => new Set())
+
+  useEffect(() => {
+    if (!detail || initializedRuns.current || detail.runs.length === 0) return
+    initializedRuns.current = true
+    setExpandedRuns(new Set([detail.runs[detail.runs.length - 1].id]))
+  }, [detail])
+
+
 
   return (
     <div className="drawer-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -1000,6 +1058,7 @@ function JobDrawer({
                         <CommandCard
                           key={command.id}
                           command={command}
+                          canLoadOutput={isFinished(detail.job.status) && isFinished(command.status)}
                           outputState={outputs[command.id]}
                           onLoadOutput={() => onLoadOutput(command.id)}
                         />
@@ -1016,7 +1075,7 @@ function JobDrawer({
   )
 }
 
-function CommandCard({ command, outputState, onLoadOutput }: { command: Command; outputState?: OutputState; onLoadOutput: () => void }) {
+function CommandCard({ command, canLoadOutput, outputState, onLoadOutput }: { command: Command; canLoadOutput: boolean; outputState?: OutputState; onLoadOutput: () => void }) {
   const invocation = [command.program, ...command.args].map(shellToken).join(' ')
   return (
     <article className="command-card">
@@ -1034,10 +1093,10 @@ function CommandCard({ command, outputState, onLoadOutput }: { command: Command;
       {command.error && <div className="error-block"><strong>Command error</strong><pre>{command.error}</pre></div>}
       <div className="output-heading">
         <span>Captured output · {formatBytes(command.stdout_bytes + command.stderr_bytes)}</span>
-        {!outputState && <button onClick={onLoadOutput}>Load output</button>}
+        {!outputState && <button disabled={!canLoadOutput} title={!canLoadOutput ? 'Output is available when the job has failed or succeeded.' : undefined} onClick={onLoadOutput}>Load output</button>}
         {outputState?.state === 'loading' && <span>Loading…</span>}
-        {outputState?.state === 'error' && <button onClick={onLoadOutput}>Retry</button>}
-        {outputState?.state === 'ready' && <button onClick={onLoadOutput}>Reload output</button>}
+        {outputState?.state === 'error' && <button disabled={!canLoadOutput} onClick={onLoadOutput}>Retry</button>}
+        {outputState?.state === 'ready' && <button disabled={!canLoadOutput} onClick={onLoadOutput}>Reload output</button>}
       </div>
       {outputState?.state === 'error' && <p className="inline-warning">{outputState.message}</p>}
       {outputState?.state === 'ready' && (
@@ -1115,7 +1174,11 @@ function CountButton({ label, value, active, onClick }: { label: string; value: 
 
 function StatusPill({ status }: { status: string }) {
   const normalized = status.toLowerCase()
-  return <span className={`status status-${normalized}`}><i />{normalized}</span>
+  return <span className={`status status-${normalized}`} title={normalized === 'pending' ? 'Waiting for a resource' : undefined}><i />{normalized}</span>
+}
+
+function isFinished(status: string) {
+  return status === 'SUCCEEDED' || status === 'FAILED'
 }
 
 function Detail({ label, value }: { label: string; value: ReactNode }) {

@@ -163,6 +163,8 @@ verify() {
 main() {
     info "Installing onderzeeer and onderzeeerd..."
 
+    command -v curl >/dev/null 2>&1 || error "curl is required to download releases"
+
     detect_os
     detect_arch
     get_target

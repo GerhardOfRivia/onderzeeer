@@ -29,6 +29,16 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
 // RunWithResources uses the caller's coordinator to share reservations across
 // otherwise independent queues. The control daemon owns one for its lifetime.
 func RunWithResources(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources *resource.Coordinator) error {
+	return run(ctx, cfg, logger, resources, false)
+}
+
+// RunTest runs standalone discovery and execution until canceled or a worker
+// fails. The failed attempt is persisted before the error is returned.
+func RunTest(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+	return run(ctx, cfg, logger, &resource.Coordinator{}, true)
+}
+
+func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources *resource.Coordinator, stopOnError bool) error {
 	if ctx == nil {
 		return errors.New("daemon: context is required")
 	}
@@ -96,10 +106,11 @@ func RunWithResources(ctx context.Context, cfg *config.Config, logger *slog.Logg
 		worker.NewConfigResolver(cfg.Watches),
 		executor.NewLocal(logger),
 		worker.Options{
-			Workers:    cfg.Queue.Workers,
-			Resources:  resources,
-			RetryDelay: cfg.Queue.RetryDelay.Duration,
-			Logger:     logger,
+			StopOnError: stopOnError,
+			Workers:     cfg.Queue.Workers,
+			Resources:   resources,
+			RetryDelay:  cfg.Queue.RetryDelay.Duration,
+			Logger:      logger,
 		},
 	)
 	if err != nil {
@@ -120,7 +131,7 @@ func RunWithResources(ctx context.Context, cfg *config.Config, logger *slog.Logg
 	cancel()
 	second := <-results
 	for _, outcome := range []result{first, second} {
-		if outcome.err != nil && !errors.Is(outcome.err, context.Canceled) {
+		if outcome.err != nil && !isCancellationFrom(outcome.err, runContext.Err()) {
 			return fmt.Errorf("daemon: %s: %w", outcome.component, outcome.err)
 		}
 	}

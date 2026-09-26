@@ -81,7 +81,12 @@ func testCommand(args []string, stdout, stderr io.Writer) error {
 		}
 	}()
 
-	return testSelectedConfig(runContext, flags.Arg(0), stdout, daemon.RunMany)
+	return testSelectedConfig(runContext, flags.Arg(0), stdout, func(ctx context.Context, configs []daemon.NamedConfig, logger *slog.Logger) error {
+		if err := daemon.RunTest(ctx, configs[0].Config, logger.With("config", configs[0].Path)); err != nil {
+			return fmt.Errorf("test: config %q: %w", configs[0].Path, err)
+		}
+		return nil
+	})
 }
 
 func testSelectedConfig(ctx context.Context, selection string, output io.Writer, runner selectedConfigRunner) error {

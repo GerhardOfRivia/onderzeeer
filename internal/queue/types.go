@@ -11,6 +11,7 @@ type Status string
 
 const (
 	StatusQueued    Status = "QUEUED"
+	StatusPending   Status = "PENDING"
 	StatusRunning   Status = "RUNNING"
 	StatusSucceeded Status = "SUCCEEDED"
 	StatusFailed    Status = "FAILED"
@@ -32,6 +33,8 @@ var (
 	ErrNotFound = errors.New("queue record not found")
 	// ErrInvalidTransition means a stale or already-completed record was updated.
 	ErrInvalidTransition = errors.New("invalid queue state transition")
+	// ErrJobActive prevents removal while a worker owns a job.
+	ErrJobActive = errors.New("job is running or pending; stop its instance before removing it")
 )
 
 // Job is a discovered file and its durable execution state. RunID and Attempt
@@ -151,13 +154,17 @@ type CommandOutput struct {
 type JobFilter struct {
 	Status    Status
 	WatchName string
-	Limit     int
-	Offset    int
+	// Search matches literal text in file paths, watch names, status, errors,
+	// or the job ID (optionally prefixed with #).
+	Search string
+	Limit  int
+	Offset int
 }
 
 // QueueCounts is a point-in-time count of jobs by state.
 type QueueCounts struct {
 	Queued    int64
+	Pending   int64
 	Running   int64
 	Succeeded int64
 	Failed    int64

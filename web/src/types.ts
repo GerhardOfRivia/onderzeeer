@@ -1,4 +1,4 @@
-export type JobStatus = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
+export type JobStatus = 'QUEUED' | 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 export type InstanceState = 'running' | 'stopping' | 'exited' | 'failed'
 export type CommandStatus = 'RUNNING' | 'SUCCEEDED' | 'FAILED'
 
@@ -10,6 +10,7 @@ export interface InfoResponse {
 
 export interface QueueCounts {
   queued: number
+  pending: number
   running: number
   succeeded: number
   failed: number
@@ -30,13 +31,18 @@ export interface Instance {
   error?: string
 }
 
+export interface WatchSummary {
+  name: string
+  path: string
+}
+
 export interface QueueSummary {
   id: string
   display_name: string
   config_path: string
   config_hash: string
   database_path: string
-  watches: string[]
+  watches: WatchSummary[]
   database_state: 'ready' | 'missing' | 'unavailable'
   counts: QueueCounts
   active_instance?: Instance

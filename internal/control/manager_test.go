@@ -150,7 +150,14 @@ func TestManagerRetainsKnownQueuesAfterInstancesStop(t *testing.T) {
 	configPath := filepath.Join(root, "incoming.yaml")
 	databasePath := filepath.Join(root, "incoming.db")
 	cfg := testConfig(databasePath)
-	cfg.Watches = []config.WatchConfig{{Name: "incoming"}, {Name: "archive"}}
+	cfg.Watches = []config.WatchConfig{
+		{Name: "incoming", Path: filepath.Join(root, "incoming")},
+		{Name: "archive", Path: filepath.Join(root, "archive")},
+	}
+	wantWatches := []WatchSummary{
+		{Name: "incoming", Path: filepath.Join(root, "incoming")},
+		{Name: "archive", Path: filepath.Join(root, "archive")},
+	}
 	manager := newTestManager(t, Options{
 		Loader: mappedLoader(t, map[string]*config.Config{configPath: cfg}),
 		Runner: func(ctx context.Context, _ *config.Config, _ *slog.Logger) error {
@@ -169,12 +176,12 @@ func TestManagerRetainsKnownQueuesAfterInstancesStop(t *testing.T) {
 		t.Fatalf("known queues = %+v, want one", known)
 	}
 	if known[0].ConfigPath != configPath || known[0].DatabasePath != databasePath ||
-		!reflect.DeepEqual(known[0].WatchNames, []string{"incoming", "archive"}) {
+		!reflect.DeepEqual(known[0].Watches, wantWatches) {
 		t.Fatalf("known queue = %+v", known[0])
 	}
-	known[0].WatchNames[0] = "mutated"
-	if got := manager.KnownQueues()[0].WatchNames[0]; got != "incoming" {
-		t.Fatalf("known queue returned mutable watch slice: %q", got)
+	known[0].Watches[0] = WatchSummary{Name: "mutated", Path: "mutated"}
+	if got := manager.KnownQueues()[0].Watches; !reflect.DeepEqual(got, wantWatches) {
+		t.Fatalf("known queue returned mutable watch slice: %+v", got)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -184,6 +191,9 @@ func TestManagerRetainsKnownQueuesAfterInstancesStop(t *testing.T) {
 	}
 	if len(manager.List(false)) != 0 || len(manager.KnownQueues()) != 1 {
 		t.Fatalf("stopped queue was not retained: active=%+v queues=%+v", manager.List(false), manager.KnownQueues())
+	}
+	if got := manager.KnownQueues()[0].Watches; !reflect.DeepEqual(got, wantWatches) {
+		t.Fatalf("stopped queue watches = %+v, want %+v", got, wantWatches)
 	}
 }
 

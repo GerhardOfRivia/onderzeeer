@@ -14,13 +14,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
+const jobsSchema = `
 CREATE TABLE IF NOT EXISTS jobs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     watch_name    TEXT NOT NULL,
     path          TEXT NOT NULL,
     fingerprint   TEXT NOT NULL,
-    status        TEXT NOT NULL CHECK (status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED')),
+    status        TEXT NOT NULL CHECK (status IN ('QUEUED', 'PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')),
     attempts      INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     max_retries   INTEGER NOT NULL CHECK (max_retries >= 0),
     available_at  INTEGER NOT NULL,
@@ -30,24 +30,25 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at    INTEGER,
     finished_at   INTEGER,
     UNIQUE (watch_name, path, fingerprint)
-);
+);`
 
-CREATE INDEX IF NOT EXISTS jobs_claim_idx
-    ON jobs (status, available_at, id);
-CREATE INDEX IF NOT EXISTS jobs_watch_idx
-    ON jobs (watch_name, id);
-
+const runsSchema = `
 CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id        INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     attempt       INTEGER NOT NULL CHECK (attempt > 0),
-    status        TEXT NOT NULL CHECK (status IN ('RUNNING', 'SUCCEEDED', 'FAILED')),
+    status        TEXT NOT NULL CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED')),
     error         TEXT NOT NULL DEFAULT '',
     started_at    INTEGER NOT NULL,
     finished_at   INTEGER,
     UNIQUE (job_id, attempt)
-);
+);`
 
+const schema = jobsSchema + runsSchema + `
+CREATE INDEX IF NOT EXISTS jobs_claim_created_idx
+    ON jobs (status, created_at, id, available_at);
+CREATE INDEX IF NOT EXISTS jobs_watch_idx
+    ON jobs (watch_name, id);
 CREATE INDEX IF NOT EXISTS runs_job_idx ON runs (job_id, attempt);
 
 -- Interrupted resource waits retain their run history but do not spend the
@@ -146,6 +147,10 @@ func Open(path string, opts ...Option) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("queue: initialize database %q schema: %w", path, err)
+	}
+	if err := migratePendingState(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
 	}
 
 	return s, nil

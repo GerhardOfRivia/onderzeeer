@@ -30,6 +30,9 @@ func TestInterruptedResourceWaitPreservesHistoryAndRetryBudget(t *testing.T) {
 	if err := store.CompleteCommand(ctx, commandID, CommandResult{Status: CommandSucceeded}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.MarkPending(ctx, job.ID, first.RunID); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.InterruptResourceWait(ctx, job.ID, first.RunID, "waiting for gpu: context canceled"); err != nil {
 		t.Fatal(err)
 	}
