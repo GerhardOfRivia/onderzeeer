@@ -207,6 +207,7 @@ function TokenGate({
         <p className="auth-note">
           This token is sent with dashboard API requests. Plain HTTP does not protect it on an untrusted network.
         </p>
+        <p className="auth-note"><a href="/docs/">API docs</a></p>
       </section>
       <div className="auth-grid" aria-hidden="true" />
     </main>
@@ -548,6 +549,7 @@ function Dashboard({
           </div>
         </div>
         <div className="topbar-actions">
+          <a className="text-button" href="/docs/">API docs</a>
           <ThemeControl theme={theme} onChange={onThemeChange} />
           <span className={`connection-state ${refreshError ? 'offline' : lastUpdated ? 'online' : 'connecting'}`}>
             <i /> {refreshError ? 'Refresh failed' : lastUpdated ? 'Local daemon' : 'Connecting'}
@@ -712,6 +714,17 @@ function QueueRail({
                 {actionID === actionKey ? '…' : instanceState === 'stopping' ? '…' : active ? '■' : '▶'}
                 </button>}
               </div>
+              {queue.watches.length > 0 && (
+                <div className="queue-watch-folders">
+                  <span className="queue-path-label">{queue.watches.length === 1 ? 'Watch folder' : 'Watch folders'}</span>
+                  {queue.watches.map((source) => (
+                    <div className="queue-watch-folder" key={source.name}>
+                      {queue.watches.length > 1 && <span className="watch-tag">{source.name}</span>}
+                      <code title={source.path}>{source.path}</code>
+                    </div>
+                  ))}
+                </div>
+              )}
             </article>
           )
         })}
@@ -759,27 +772,18 @@ function QueuePanel({
         <div className="queue-title-line">
           <h2 id="queue-title">{queue.display_name}</h2>
           <StatusPill status={queue.active_instance?.state ?? 'stopped'} />
-        </div>
-        <div className="queue-tools">
-          <button className="icon-button" onClick={onRefresh} aria-label="Refresh jobs">↻</button>
-        </div>
-        <div className="queue-watch-folders">
-          <span className="queue-path-label">{queue.watches.length === 1 ? 'Watch folder' : 'Watch folders'}</span>
-          {queue.watches.map((source) => (
-            <div className="queue-watch-folder" key={source.name}>
-              {queue.watches.length > 1 && <span className="watch-tag">{source.name}</span>}
-              <code title={source.path}>{source.path}</code>
-            </div>
-          ))}
-        </div>
-        <div className="queue-search">
           {(watch || status) && (
             <div className="job-filter-tags" aria-label="Active job filters">
               {status && <button className="job-filter-tag" onClick={() => onStatus('')} aria-label={`Remove status filter ${status}`}><span>Status: {status.toLowerCase()}</span><span aria-hidden="true">×</span></button>}
               {watch && <button className="job-filter-tag" onClick={() => onWatch('')} aria-label={`Remove watch filter ${watch}`}><span>Watch: {watch}</span><span aria-hidden="true">×</span></button>}
             </div>
           )}
-          <input type="search" aria-label="Search jobs" placeholder="Search jobs…" maxLength={1024} value={search} onChange={(event) => onSearch(event.target.value)} title="Search file paths, watch names, job IDs, statuses, and errors" />
+        </div>
+        <div className="queue-tools">
+          <div className="queue-search">
+            <input type="search" aria-label="Search jobs" placeholder="Search jobs…" maxLength={1024} value={search} onChange={(event) => onSearch(event.target.value)} title="Search file paths, watch names, job IDs, statuses, and errors" />
+          </div>
+          <button className="icon-button" onClick={onRefresh} aria-label="Refresh jobs">↻</button>
         </div>
       </header>
 

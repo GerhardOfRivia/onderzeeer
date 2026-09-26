@@ -1,0 +1,9 @@
+body { margin: 0; background: #fafafa; }
+.docs-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px max(20px, calc((100% - 1420px) / 2)); background: #132f32; font: 14px system-ui, sans-serif; }
+.docs-header a { color: #fff; text-decoration: none; }
+.docs-header a:hover { text-decoration: underline; }
+.docs-header .docs-brand { font-size: 20px; font-weight: 650; }
+.docs-header nav { display: flex; flex-wrap: wrap; gap: 20px; }
+.docs-header a:focus-visible { outline: 2px solid #fff; outline-offset: 5px; }
+.swagger-ui .info { margin: 32px 0; }
+@media (max-width: 480px) { .docs-header { align-items: flex-start; } .docs-header nav { gap: 12px; justify-content: flex-end; } }

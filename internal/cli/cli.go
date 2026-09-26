@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,6 +61,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 // version. Run exists as a convenient entry point for callers that do not
 // inject build metadata.
 func RunVersion(args []string, stdout, stderr io.Writer, version string) int {
+	return runVersionWithInput(args, os.Stdin, stdout, stderr, version)
+}
+
+func runVersionWithInput(args []string, stdin io.Reader, stdout, stderr io.Writer, version string) int {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -94,7 +99,7 @@ func RunVersion(args []string, stdout, stderr io.Writer, version string) int {
 	case "ps":
 		err = psCommand(args[1:], stdout, stderr)
 	case "system":
-		err = systemCommand(args[1:], stdout, stderr)
+		err = systemCommand(args[1:], stdin, stdout, stderr)
 	case "stop":
 		err = stopCommand(args[1:], stdout, stderr)
 	case "status":

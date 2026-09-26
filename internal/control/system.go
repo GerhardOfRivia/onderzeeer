@@ -73,6 +73,24 @@ func (server *Server) handleSystemPurge(output http.ResponseWriter, request *htt
 	writeJSON(output, http.StatusOK, result)
 }
 
+func (server *Server) handleSystemPurgeSelected(output http.ResponseWriter, request *http.Request) {
+	var input purgeRequest
+	if err := decodeRequest(output, request, &input); err != nil {
+		writeAPIError(output, http.StatusBadRequest, "invalid_request", err)
+		return
+	}
+	result, err := server.manager.PurgeSelected(request.Context(), input.Instances)
+	if err != nil {
+		writeAPIError(output, http.StatusServiceUnavailable, "purge_unavailable", err)
+		return
+	}
+	writeJSON(output, http.StatusOK, result)
+}
+
+type purgeRequest struct {
+	Instances []Instance `json:"instances"`
+}
+
 // System returns the running daemon's effective settings and storage locations.
 func (client *Client) System(ctx context.Context) (SystemInfo, error) {
 	var info SystemInfo
@@ -84,5 +102,18 @@ func (client *Client) System(ctx context.Context) (SystemInfo, error) {
 func (client *Client) PurgeInactive(ctx context.Context) (PurgeResult, error) {
 	var result PurgeResult
 	err := client.doJSON(ctx, http.MethodPost, "/v1/system/purge", struct{}{}, &result)
+	return result, err
+}
+
+// PurgeSelected removes only unchanged inactive instances from the supplied
+// preview. Newly inactive queues are never added to this request.
+func (client *Client) PurgeSelected(ctx context.Context, instances []Instance) (PurgeResult, error) {
+	if instances == nil {
+		instances = []Instance{}
+	}
+	var result PurgeResult
+	// A distinct endpoint ensures older daemons cannot silently ignore the
+	// selection and fall back to purging every inactive queue.
+	err := client.doJSON(ctx, http.MethodPost, "/v1/system/purge-selected", purgeRequest{Instances: instances}, &result)
 	return result, err
 }

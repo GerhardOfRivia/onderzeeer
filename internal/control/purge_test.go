@@ -244,3 +244,75 @@ func TestPurgeRacesWithRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestConfirmedPurgeKeepsQueuesOutsidePreviewAndChangedInstances(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{
+		registeredConfig(t, root, "reviewed"),
+		registeredConfig(t, root, "later"),
+		registeredConfig(t, root, "restarted"),
+	}
+	manager, client, _ := newUnixTransportHarness(t, Options{StateDirectory: filepath.Join(root, "state"), Runner: waitingRunner})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	instances, err := client.Start(ctx, paths, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, instance := range instances {
+		if err := os.WriteFile(instance.DatabasePath, []byte("queue data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var preview []Instance
+	for _, name := range []string{"reviewed", "restarted"} {
+		instance, err := client.Stop(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		preview = append(preview, instance)
+	}
+	// An empty selection must never fall back to purging everything.
+	result, err := client.PurgeSelected(ctx, nil)
+	if err != nil || len(result.Removed) != 0 || len(manager.List(true)) != 3 {
+		t.Fatalf("empty selected purge = %+v, %v", result, err)
+	}
+	// These lifecycle changes occur while the user is looking at the preview.
+	if _, err := client.Stop(ctx, "later"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Start(ctx, []string{"restarted"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Stop(ctx, "restarted"); err != nil {
+		t.Fatal(err)
+	}
+	result, err = client.PurgeSelected(ctx, preview)
+	if err != nil || len(result.Removed) != 1 || result.Removed[0].Name != "reviewed" || len(result.Failures) != 1 || result.Failures[0].Name != "restarted" {
+		t.Fatalf("confirmed purge = %+v, %v", result, err)
+	}
+	if _, err := manager.Get("reviewed"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("reviewed queue was not removed: %v", err)
+	}
+	for _, name := range []string{"later", "restarted"} {
+		instance, err := manager.Get(name)
+		if err != nil {
+			t.Fatal("unreviewed queue removed", err)
+		}
+		if data, err := os.ReadFile(instance.DatabasePath); err != nil || string(data) != "queue data" {
+			t.Fatalf("unreviewed database changed: %q, %v", data, err)
+		}
+	}
+	// A confirmed snapshot that is now actively running is also protected.
+	fresh, err := client.Get(ctx, "later")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Start(ctx, []string{"later"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	result, err = client.PurgeSelected(ctx, []Instance{fresh})
+	if err != nil || len(result.Removed) != 0 || len(result.Failures) != 1 {
+		t.Fatalf("active selected purge = %+v, %v", result, err)
+	}
+}

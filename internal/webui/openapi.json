@@ -1,0 +1,1404 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "onderzeeer dashboard API",
+    "version": "dev",
+    "description": "HTTP API served by onderzeeerd when --web-listen is enabled. All paths are relative to this daemon.\n\nUse **Authorize** to enter the web token from the private token file shown in the daemon startup log. Enter only the token, without the Bearer prefix. Authorization is kept in memory and cleared when this page reloads.\n\nReads require authentication by default. With ONDERZEEER_WEB_PUBLIC_READ=true, GET operations accept anonymous requests; the served specification reflects that setting. An explicitly supplied invalid token is always rejected. Start and stop always require authentication and perform real control operations.\n\nThis reference and /openapi.json are readable without a token. They contain no queue data or credentials. The listener accepts localhost and loopback IP Host headers; wildcard listeners also accept remote literal IPs.\n\nThe CLI’s Unix-socket /v1/... control API is a separate transport and is not covered by this reference."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "This onderzeeerd web listener"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Server",
+      "description": "Build and access information."
+    },
+    {
+      "name": "Queues",
+      "description": "Registered queues and queue control."
+    },
+    {
+      "name": "Jobs",
+      "description": "Job history and captured output."
+    },
+    {
+      "name": "Instances",
+      "description": "Managed instance lifecycle."
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v1/info": {
+      "get": {
+        "operationId": "getInfo",
+        "tags": [
+          "Server"
+        ],
+        "summary": "Get daemon version and permissions",
+        "description": "can_control is true only when the request includes a valid bearer token. public_read reports whether anonymous API reads are enabled.",
+        "responses": {
+          "200": {
+            "description": "Get daemon version and permissions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Info"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/queues": {
+      "get": {
+        "operationId": "listQueues",
+        "tags": [
+          "Queues"
+        ],
+        "summary": "List registered queues and job counts",
+        "description": "Includes queues belonging to stopped instances. A missing or unreadable database is reported in each queue’s database_state and error fields, with zero counts, without failing the whole response.",
+        "responses": {
+          "200": {
+            "description": "List registered queues and job counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queues"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/instances": {
+      "get": {
+        "operationId": "listInstances",
+        "tags": [
+          "Instances"
+        ],
+        "summary": "List instances",
+        "description": "Includes retained terminal instances by default. Set all=false to return active instances only (running or stopping).",
+        "responses": {
+          "200": {
+            "description": "List instances.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Instances"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          }
+        },
+        "parameters": [
+          {
+            "name": "all",
+            "in": "query",
+            "required": false,
+            "description": "Include terminal instances. Canonical values are true and false; Go boolean spellings such as 1 and 0 are also accepted.",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/queues/{queueID}/jobs": {
+      "get": {
+        "operationId": "listJobs",
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "List and filter jobs",
+        "description": "Filters are combined before pagination. status is case-insensitive. watch is an exact watch name; watch and search are trimmed. search matches literal text in paths, watch names, job IDs (including #123), statuses, and error messages.",
+        "responses": {
+          "200": {
+            "description": "List and filter jobs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Jobs"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/QueueNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/QueueUninitialized"
+          },
+          "503": {
+            "$ref": "#/components/responses/QueueUnavailable"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/QueueID"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter by job status. Lowercase values are also accepted.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "QUEUED",
+                "PENDING",
+                "RUNNING",
+                "SUCCEEDED",
+                "FAILED"
+              ]
+            }
+          },
+          {
+            "name": "watch",
+            "in": "query",
+            "required": false,
+            "description": "Exact watch name; at most 256 UTF-8 bytes after trimming.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "Literal search text; at most 1024 UTF-8 bytes after trimming.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum number of jobs to return.",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Number of matching jobs to skip.",
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 2147483647
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/queues/{queueID}/jobs/{jobID}": {
+      "get": {
+        "operationId": "getJob",
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get a job with run and command history",
+        "description": "Includes execution attempts and command metadata. Fetch stdout/stderr separately using each command ID. Persisted environment variables are not returned.",
+        "responses": {
+          "200": {
+            "description": "Get a job with run and command history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "404": {
+            "description": "Queue or job not found (queue_not_found or job_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "job_not_found",
+                    "message": "Job not found"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/QueueUninitialized"
+          },
+          "503": {
+            "$ref": "#/components/responses/QueueUnavailable"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/QueueID"
+          },
+          {
+            "$ref": "#/components/parameters/JobID"
+          }
+        ]
+      }
+    },
+    "/api/v1/queues/{queueID}/commands/{commandID}/output": {
+      "get": {
+        "operationId": "getCommandOutput",
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get captured command output",
+        "description": "Returns persisted stdout and stderr for a command. Output may be incomplete while execution is running.",
+        "responses": {
+          "200": {
+            "description": "Get captured command output.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandOutput"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "404": {
+            "description": "Queue or command not found (queue_not_found or command_not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "command_not_found",
+                    "message": "Command not found"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/QueueUninitialized"
+          },
+          "503": {
+            "$ref": "#/components/responses/QueueUnavailable"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/QueueID"
+          },
+          {
+            "$ref": "#/components/parameters/CommandID"
+          }
+        ]
+      }
+    },
+    "/api/v1/queues/{queueID}/start": {
+      "post": {
+        "operationId": "startQueue",
+        "tags": [
+          "Queues"
+        ],
+        "summary": "Start a registered queue",
+        "description": "Resumes the registered configuration. A changed queue database path requires re-registration through the CLI.\n\nRequires a bearer token even when public reads are enabled, Content-Type: application/json, X-onderzeeer-Web: 1, and the JSON body {} (maximum 1024 bytes; unknown fields are rejected). Browser requests must originate from the same HTTP origin as the daemon.",
+        "responses": {
+          "201": {
+            "description": "Start a registered queue.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/QueueNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ShuttingDown"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          },
+          "422": {
+            "description": "The registered configuration could not be started (start_failed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "start_failed",
+                    "message": "The registered configuration could not be started"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/QueueID"
+          },
+          {
+            "$ref": "#/components/parameters/MutationHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRequest"
+              },
+              "example": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/instances/{instanceID}/stop": {
+      "post": {
+        "operationId": "stopInstance",
+        "tags": [
+          "Instances"
+        ],
+        "summary": "Stop an instance",
+        "description": "Stops the instance and saves its desired state as stopped; its queue and execution history remain available.\n\nRequires a bearer token even when public reads are enabled, Content-Type: application/json, X-onderzeeer-Web: 1, and the JSON body {} (maximum 1024 bytes; unknown fields are rejected). Browser requests must originate from the same HTTP origin as the daemon.",
+        "responses": {
+          "200": {
+            "description": "Stop an instance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceResult"
+                },
+                "example": {
+                  "instance": {
+                    "id": "012345abcdef",
+                    "name": "incoming",
+                    "config_path": "/etc/onderzeeer/incoming.yaml",
+                    "config_hash": "example-config-hash",
+                    "database_path": "/var/lib/onderzeeer/incoming.db",
+                    "state": "exited",
+                    "desired_state": "stopped",
+                    "created_at": "2026-09-26T12:00:00Z",
+                    "started_at": "2026-09-26T12:00:00Z",
+                    "finished_at": "2026-09-26T12:01:00Z"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "404": {
+            "description": "Instance not found (not_found).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "not_found",
+                    "message": "Instance not found"
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Control conflict (ambiguous_selector or not_active).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "not_active",
+                    "message": "The instance is not active"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ShuttingDown"
+          },
+          "504": {
+            "$ref": "#/components/responses/Timeout"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/InstanceID"
+          },
+          {
+            "$ref": "#/components/parameters/MutationHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmptyRequest"
+              },
+              "example": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The opaque web access token from the daemon token file (not a JWT)."
+      }
+    },
+    "parameters": {
+      "QueueID": {
+        "name": "queueID",
+        "in": "path",
+        "required": true,
+        "description": "Opaque ID from GET /api/v1/queues; not a queue name or filesystem path.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "JobID": {
+        "name": "jobID",
+        "in": "path",
+        "required": true,
+        "description": "Job ID from the queue job list.",
+        "schema": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        }
+      },
+      "CommandID": {
+        "name": "commandID",
+        "in": "path",
+        "required": true,
+        "description": "Command ID from a run in the job detail response.",
+        "schema": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        }
+      },
+      "InstanceID": {
+        "name": "instanceID",
+        "in": "path",
+        "required": true,
+        "description": "Full 12-character instance ID. Names and ID prefixes are not accepted.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{12}$"
+        }
+      },
+      "MutationHeader": {
+        "name": "X-onderzeeer-Web",
+        "in": "header",
+        "required": true,
+        "description": "Required for start/stop requests. Use the literal value 1.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "1"
+          ],
+          "default": "1"
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid bearer token (unauthorized). An explicitly supplied invalid token is rejected even when public reads are enabled.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "unauthorized",
+                "message": "A valid onderzeeer web token is required"
+              }
+            }
+          }
+        },
+        "headers": {
+          "WWW-Authenticate": {
+            "description": "Bearer authentication challenge.",
+            "schema": {
+              "type": "string"
+            },
+            "example": "Bearer realm=\"onderzeeer-web\""
+          }
+        }
+      },
+      "InvalidRequest": {
+        "description": "Invalid path/query parameter or mutation headers/body/origin (invalid_request).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "invalid_request",
+                "message": "The request contains an invalid parameter, header, or body"
+              }
+            }
+          }
+        }
+      },
+      "QueueNotFound": {
+        "description": "Queue ID is not registered (queue_not_found).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "queue_not_found",
+                "message": "Queue not found"
+              }
+            }
+          }
+        }
+      },
+      "QueueUninitialized": {
+        "description": "The registered queue database has not been created yet (queue_uninitialized).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "queue_uninitialized",
+                "message": "Queue has not been created yet"
+              }
+            }
+          }
+        }
+      },
+      "QueueUnavailable": {
+        "description": "The queue database could not be read (queue_unavailable).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "queue_unavailable",
+                "message": "The queue database could not be read"
+              }
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Control conflict: ambiguous_selector, already_active, name_in_use, not_active, or queue_changed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "already_active",
+                "message": "The queue already has an active instance"
+              }
+            }
+          }
+        }
+      },
+      "ShuttingDown": {
+        "description": "The daemon is shutting down (shutting_down).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "shutting_down",
+                "message": "The daemon is shutting down"
+              }
+            }
+          }
+        }
+      },
+      "Timeout": {
+        "description": "The control operation exceeded its 25-second deadline (operation_timeout).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "operation_timeout",
+                "message": "The control operation timed out"
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "An unexpected control error occurred (internal_error).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "internal_error",
+                "message": "An unexpected control error occurred"
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Info": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "public_read",
+          "can_control"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "public_read": {
+            "type": "boolean"
+          },
+          "can_control": {
+            "type": "boolean"
+          }
+        },
+        "example": {
+          "version": "dev",
+          "public_read": false,
+          "can_control": true
+        }
+      },
+      "Watch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "path"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Resolved watch folder on the daemon host."
+          }
+        }
+      },
+      "Instance": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "config_path",
+          "config_hash",
+          "database_path",
+          "state",
+          "created_at",
+          "started_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{12}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "config_path": {
+            "type": "string"
+          },
+          "config_hash": {
+            "type": "string"
+          },
+          "database_path": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopping",
+              "exited",
+              "failed"
+            ]
+          },
+          "desired_state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopped"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "example": {
+          "id": "012345abcdef",
+          "name": "incoming",
+          "config_path": "/etc/onderzeeer/incoming.yaml",
+          "config_hash": "example-config-hash",
+          "database_path": "/var/lib/onderzeeer/incoming.db",
+          "state": "running",
+          "desired_state": "running",
+          "created_at": "2026-09-26T12:00:00Z",
+          "started_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "QueueCounts": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "queued",
+          "pending",
+          "running",
+          "succeeded",
+          "failed",
+          "total"
+        ],
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "running": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "succeeded": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Queue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "display_name",
+          "config_path",
+          "config_hash",
+          "database_path",
+          "watches",
+          "database_state",
+          "counts"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Opaque queue ID. Use this ID from the queue list in subsequent requests."
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "config_path": {
+            "type": "string"
+          },
+          "config_hash": {
+            "type": "string"
+          },
+          "database_path": {
+            "type": "string"
+          },
+          "watches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Watch"
+            }
+          },
+          "database_state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "missing",
+              "unavailable"
+            ]
+          },
+          "counts": {
+            "$ref": "#/components/schemas/QueueCounts"
+          },
+          "active_instance": {
+            "$ref": "#/components/schemas/Instance"
+          },
+          "error": {
+            "type": "string",
+            "description": "Why counts could not be read. Counts are zero when the database is missing or unavailable."
+          }
+        }
+      },
+      "Queues": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "queues",
+          "generated_at"
+        ],
+        "properties": {
+          "queues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Queue"
+            }
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "example": {
+          "queues": [],
+          "generated_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "Instances": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "instances",
+          "generated_at"
+        ],
+        "properties": {
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Instance"
+            }
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "example": {
+          "instances": [],
+          "generated_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "InstanceResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "instance"
+        ],
+        "properties": {
+          "instance": {
+            "$ref": "#/components/schemas/Instance"
+          }
+        },
+        "example": {
+          "instance": {
+            "id": "012345abcdef",
+            "name": "incoming",
+            "config_path": "/etc/onderzeeer/incoming.yaml",
+            "config_hash": "example-config-hash",
+            "database_path": "/var/lib/onderzeeer/incoming.db",
+            "state": "running",
+            "desired_state": "running",
+            "created_at": "2026-09-26T12:00:00Z",
+            "started_at": "2026-09-26T12:00:00Z"
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "watch_name",
+          "path",
+          "status",
+          "attempts",
+          "max_retries",
+          "available_at",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "watch_name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "Included in job detail when available; omitted from job lists."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "PENDING",
+              "RUNNING",
+              "SUCCEEDED",
+              "FAILED"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_retries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "available_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "example": {
+          "id": 1,
+          "watch_name": "incoming",
+          "path": "/data/incoming/report.txt",
+          "status": "QUEUED",
+          "attempts": 0,
+          "max_retries": 3,
+          "available_at": "2026-09-26T12:00:00Z",
+          "created_at": "2026-09-26T12:00:00Z",
+          "updated_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "Jobs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "jobs",
+          "limit",
+          "offset",
+          "has_more",
+          "generated_at"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Job"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "has_more": {
+            "type": "boolean",
+            "description": "More matching jobs exist after this page. Request offset + limit for the next page."
+          },
+          "generated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "example": {
+          "jobs": [],
+          "limit": 50,
+          "offset": 0,
+          "has_more": false,
+          "generated_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "Run": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "attempt",
+          "status",
+          "started_at",
+          "commands"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "PENDING",
+              "RUNNING",
+              "SUCCEEDED",
+              "FAILED"
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "commands": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Command"
+            }
+          }
+        }
+      },
+      "Command": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "sequence",
+          "name",
+          "program",
+          "args",
+          "timeout",
+          "status",
+          "started_at",
+          "stdout_bytes",
+          "stderr_bytes"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "program": {
+            "type": "string"
+          },
+          "args": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Command arguments; null when there are no arguments."
+          },
+          "working_directory": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "string",
+            "description": "Go duration string, for example 30s or 1m0s."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "RUNNING",
+              "SUCCEEDED",
+              "FAILED"
+            ]
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "stdout_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "stderr_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "example": {
+          "id": 1,
+          "sequence": 0,
+          "name": "process",
+          "program": "/usr/bin/processor",
+          "args": [
+            "/data/incoming/report.txt"
+          ],
+          "timeout": "30s",
+          "status": "SUCCEEDED",
+          "exit_code": 0,
+          "started_at": "2026-09-26T12:00:00Z",
+          "finished_at": "2026-09-26T12:00:00Z",
+          "stdout_bytes": 10,
+          "stderr_bytes": 0
+        }
+      },
+      "JobDetail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "job",
+          "runs"
+        ],
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/Job"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Run"
+            }
+          }
+        },
+        "example": {
+          "job": {
+            "id": 1,
+            "watch_name": "incoming",
+            "path": "/data/incoming/report.txt",
+            "status": "QUEUED",
+            "attempts": 0,
+            "max_retries": 3,
+            "available_at": "2026-09-26T12:00:00Z",
+            "created_at": "2026-09-26T12:00:00Z",
+            "updated_at": "2026-09-26T12:00:00Z"
+          },
+          "runs": []
+        }
+      },
+      "CommandOutput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "command_id",
+          "stdout",
+          "stderr"
+        ],
+        "properties": {
+          "command_id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          }
+        },
+        "example": {
+          "command_id": 1,
+          "stdout": "processed\n",
+          "stderr": ""
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "description": "Machine-readable error code."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable error detail."
+              }
+            }
+          }
+        }
+      },
+      "EmptyRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "example": {}
+      }
+    }
+  }
+}

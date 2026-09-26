@@ -6,5 +6,8 @@ export default defineConfig({
   build: {
     outDir: '../internal/webui/dist',
     emptyOutDir: true,
+    rollupOptions: {
+      input: ['index.html', 'docs/index.html'],
+    },
   },
 })

@@ -1,15 +1,18 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/control"
 	"github.com/GerhardOfRivia/onderzeeer/internal/testutil"
@@ -61,26 +64,53 @@ func TestSystemReportsDaemonSettingsAndPurges(t *testing.T) {
 	}
 	waitSucceeded(t, socket, instances[0].ID, 1)
 	code, stdout, stderr = managedCLI(t, "system", "--socket", socket, "--purge")
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "Purged 0 inactive queue(s)") {
+	if code != 0 || stderr != "" || !strings.Contains(stdout, "No inactive queues to purge.") || strings.Contains(stdout, "[y/N]") {
 		t.Fatalf("active purge = %d, %q, %q", code, stdout, stderr)
 	}
 	if _, err := client.Stop(ctx, "worker"); err != nil {
 		t.Fatal(err)
 	}
+	for _, answer := range []string{"", "\n", "no\n", "maybe\n", "yes"} {
+		code, stdout, stderr := systemCLIWithInput(t, answer, "system", "--purge", "--socket", socket)
+		if code != 0 || stderr != "" || !strings.Contains(stdout, "Purge canceled. No queues were removed.") {
+			t.Fatalf("purge answer %q = %d, %q, %q", answer, code, stdout, stderr)
+		}
+		for _, want := range []string{instances[0].ID, "worker", "exited", instances[0].DatabasePath, "execution history", "captured output", "cannot be undone", "[y/N]"} {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("purge preview omitted %q: %s", want, stdout)
+			}
+		}
+		if _, err := os.Stat(instances[0].DatabasePath); err != nil {
+			t.Fatal("declined purge removed database", err)
+		}
+		if _, err := client.Get(ctx, "worker"); err != nil {
+			t.Fatal("declined purge removed registration", err)
+		}
+	}
 	blocker := instances[0].DatabasePath + "-wal"
 	if err := os.Mkdir(blocker, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	code, stdout, stderr = managedCLI(t, "system", "--purge", "--socket", socket)
+	code, stdout, stderr = systemCLIWithInput(t, "y\n", "system", "--purge", "--socket", socket)
 	if code != 1 || !strings.Contains(stderr, "purge worker") || !strings.Contains(stdout, "Purged 0 inactive queue(s)") {
 		t.Fatalf("failed purge = %d, %q, %q", code, stdout, stderr)
 	}
 	if err := os.Remove(blocker); err != nil {
 		t.Fatal(err)
 	}
-	code, stdout, stderr = managedCLI(t, "system", "--purge", "--socket", socket)
-	if code != 0 || stderr != "" || !strings.Contains(stdout, "Purged 1 inactive queue(s)") || !strings.Contains(stdout, instances[0].DatabasePath) {
-		t.Fatalf("inactive purge = %d, %q, %q", code, stdout, stderr)
+	// Exercise the real CLI entry point to verify that it consumes stdin.
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := exec.CommandContext(commandCtx, executable, "-test.run=^TestCLIHelperProcess$", "--", "system", "--purge", "--socket", socket)
+	command.Env = append(os.Environ(), "ONDERZEEER_CLI_HELPER=1")
+	command.Stdin = strings.NewReader("yes\n")
+	output, err := command.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "Purged 1 inactive queue(s)") || !strings.Contains(string(output), instances[0].DatabasePath) {
+		t.Fatalf("confirmed purge = %v, %s", err, output)
 	}
 	if _, err := os.Stat(instances[0].DatabasePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("database was not removed: %v", err)
@@ -91,6 +121,27 @@ func TestSystemReportsDaemonSettingsAndPurges(t *testing.T) {
 		}
 	}
 	process.stop(t, syscall.SIGTERM)
+}
+
+func systemCLIWithInput(t *testing.T, input string, args ...string) (int, string, string) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := runVersionWithInput(args, strings.NewReader(input), &stdout, &stderr, "dev")
+	return code, stdout.String(), stderr.String()
+}
+
+func TestPurgeConfirmationRequiresExplicitAgreement(t *testing.T) {
+	for _, answer := range []string{"y\n", "Y\n", "yes\n", " YES \r\n", "\n", "n\n", "no\n", "maybe\n", "", "yes"} {
+		t.Run(strconv.Quote(answer), func(t *testing.T) {
+			var output bytes.Buffer
+			got, err := confirmSystemPurge(strings.NewReader(answer), &output, []control.Instance{{ID: "abc123def456", Name: "worker", DatabasePath: "/state/queues/worker.sqlite"}})
+			normalized := strings.ToLower(strings.TrimSpace(answer))
+			want := strings.HasSuffix(answer, "\n") && (normalized == "y" || normalized == "yes")
+			if err != nil || got != want {
+				t.Fatalf("confirmation = %t, %v; want %t", got, err, want)
+			}
+		})
+	}
 }
 
 func TestSystemUsageAndUnavailableDaemon(t *testing.T) {

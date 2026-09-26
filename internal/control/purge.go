@@ -27,6 +27,20 @@ type PurgeResult struct {
 // Starts and writable API operations share the gate; runtime finalization and
 // shutdown share mu. Active instances therefore cannot race this selection.
 func (manager *Manager) PurgeInactive(ctx context.Context) (PurgeResult, error) {
+	return manager.purgeInactive(ctx, nil)
+}
+
+// PurgeSelected removes only the inactive snapshots a caller has reviewed.
+// An empty selection removes nothing; changed or restarted instances are kept.
+func (manager *Manager) PurgeSelected(ctx context.Context, instances []Instance) (PurgeResult, error) {
+	selection := make(map[string]Instance, len(instances))
+	for _, instance := range instances {
+		selection[instance.ID] = instance
+	}
+	return manager.purgeInactive(ctx, selection)
+}
+
+func (manager *Manager) purgeInactive(ctx context.Context, selection map[string]Instance) (PurgeResult, error) {
 	result := PurgeResult{Removed: []Instance{}, Failures: []PurgeFailure{}}
 	if ctx == nil {
 		return result, errors.New("control: purge context is required")
@@ -45,13 +59,21 @@ func (manager *Manager) PurgeInactive(ctx context.Context) (PurgeResult, error) 
 	}
 	var ids []string
 	for id, runtime := range manager.instances {
-		if !runtime.view.Active() {
+		if selection != nil {
+			if _, selected := selection[id]; selected {
+				ids = append(ids, id)
+			}
+		} else if !runtime.view.Active() {
 			ids = append(ids, id)
 		}
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
 		runtime := manager.instances[id]
+		if selection != nil && (runtime.view.Active() || !samePurgeSnapshot(runtime.view, selection[id])) {
+			result.Failures = append(result.Failures, PurgeFailure{ID: id, Name: runtime.view.Name, Error: "queue changed since confirmation; review it and run system --purge again"})
+			continue
+		}
 		if err := manager.purgeRegisteredLocked(ctx, runtime); err != nil {
 			result.Failures = append(result.Failures, PurgeFailure{ID: id, Name: runtime.view.Name, Error: err.Error()})
 			continue
@@ -62,6 +84,16 @@ func (manager *Manager) PurgeInactive(ctx context.Context) (PurgeResult, error) 
 		delete(manager.knownQueues, runtime.view.DatabasePath)
 	}
 	return result, nil
+}
+
+func samePurgeSnapshot(current, expected Instance) bool {
+	finishedEqual := current.FinishedAt == nil && expected.FinishedAt == nil ||
+		current.FinishedAt != nil && expected.FinishedAt != nil && current.FinishedAt.Equal(*expected.FinishedAt)
+	return current.ID == expected.ID && current.Name == expected.Name &&
+		current.ConfigPath == expected.ConfigPath && current.ConfigHash == expected.ConfigHash &&
+		current.DatabasePath == expected.DatabasePath && current.State == expected.State &&
+		current.DesiredState == expected.DesiredState && current.Error == expected.Error &&
+		current.CreatedAt.Equal(expected.CreatedAt) && current.StartedAt.Equal(expected.StartedAt) && finishedEqual
 }
 
 func (manager *Manager) purgeRegisteredLocked(ctx context.Context, runtime *runtimeInstance) error {

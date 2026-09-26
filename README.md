@@ -205,7 +205,13 @@ Settings come from the daemon, including its startup flags and environment;
 the daemon has no separate configuration file. Use `--socket` to select it.
 
 `--purge` permanently removes all exited and failed queue registrations and
-their databases, jobs, history, and captured output. Running and stopping
+their databases, jobs, history, and captured output. It first lists the queue
+names, IDs, states, and database paths, then asks
+`Are you sure you want to continue? [y/N]`. Enter `y` or `yes` to proceed;
+Enter, any other answer, or end-of-input cancels without deleting anything.
+No confirmation is needed when there are no inactive queues. Only the listed
+queues are eligible; queues that change or restart before confirmation are
+kept and reported for review. Running and stopping
 instances are preserved. Config files and watched files remain untouched.
 Purged instances no longer restore on daemon restart; register their config
 again to create a fresh queue. A partial failure reports the affected queues
@@ -233,8 +239,9 @@ sudo cat /run/onderzeeer/onderzeeer.sock.web-token
 The dashboard shows known queues, job counts, attempts, commands, and captured
 output, including queues whose instances have stopped. It can restart known
 queues and stop active instances. Its header shows the daemon build version
-(`dev` when built without an override). Each queue shows its watch folders below
-the instance name and status, with job search on the right and refresh above it. The queue API
+(`dev` when built without an override). Each entry in the instance list shows its
+watch folders below the name and status. Job search and refresh remain on the
+right of the job panel header. The queue API
 (`GET /api/v1/queues`) returns `watches` as objects with `name` and `path` fields;
 each path is the resolved folder from the registered configuration.
 Use the information button beside a queue to open its instance details in the
@@ -245,7 +252,7 @@ output can be loaded once the job has succeeded or failed.
 Search filters the entire queue before pagination and matches literal text in
 file paths, watch names, job IDs (including `#123`), statuses, and error messages.
 Click a watch name in the table to filter by that watch. Active watch and status
-filters appear as removable tags above the search field and combine with the
+filters appear as removable tags beside the instance status and combine with the
 search text. Changing a filter returns to the first page; selecting another
 queue clears the filters. The jobs API accepts the same text as `search`.
 
@@ -278,6 +285,34 @@ concrete non-loopback bind addresses and arbitrary HTTP hostnames are rejected.
 Wildcard binds expose every interface, and HTTP traffic is unencrypted, so
 restrict access with a firewall and protect the network path.
 
+### API reference
+
+With the web listener enabled, open `/docs/` on the same address as the
+dashboard (for example, `http://127.0.0.1:8080/docs/`). The dashboard and login
+screen also link to **API docs**. Swagger UI and its assets are embedded in the
+daemon and work without an internet connection. Download the OpenAPI 3.1
+document at `/openapi.json` or use **Download OpenAPI** in the reference.
+
+The reference covers all eight dashboard HTTP endpoints under `/api/v1/`,
+including filters, pagination, response schemas, examples, and error codes.
+The served document reports the running build version and reflects
+`ONDERZEEER_WEB_PUBLIC_READ`. The CLI's Unix-socket `/v1/` control API is separate
+and is not covered by this reference.
+
+The docs and specification are readable without a token. To make authenticated
+requests, choose **Authorize** and paste the existing web token without the
+`Bearer` prefix. Swagger UI keeps it in memory only; reloading the docs clears
+it. Public viewing allows anonymous reads when enabled, but start/stop always
+require a token. **Try it out** sends real requests to this daemon, including
+start/stop actions. For those actions, keep the documented
+`X-onderzeeer-Web: 1` header and `{}` JSON body.
+
+The source specification is `internal/webui/openapi.json`. Update it alongside
+API changes. The web build validates OpenAPI syntax, and Go tests check route
+coverage, authentication declarations, and actual responses against the schemas.
+Rebuild embedded assets with `make web` after changing the docs UI or its pinned
+Swagger UI dependency.
+
 ## queue and history inspection
 
 Inspect a managed instance by name, ID, or its registered config path:
@@ -288,8 +323,8 @@ onderzeeer queue incoming
 onderzeeer jobs incoming --status failed
 onderzeeer jobs incoming --watch incoming
 onderzeeer job incoming 42
-onderzeeer job incoming 42 --rm
 onderzeeer logs incoming 42
+onderzeeer job incoming 42 --rm
 ```
 
 `status` prints counts; `queue` lists queued, pending, and running jobs; `jobs` lists job

@@ -132,6 +132,7 @@ func NewServer(socketPath string, manager *Manager, logger *slog.Logger) (*Serve
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/system", server.handleSystem)
 	mux.HandleFunc("POST /v1/system/purge", server.handleSystemPurge)
+	mux.HandleFunc("POST /v1/system/purge-selected", server.handleSystemPurgeSelected)
 	mux.HandleFunc("POST /v1/instances", server.handleStart)
 	mux.HandleFunc("GET /v1/instances", server.handleList)
 	mux.HandleFunc("GET /v1/instances/{selector}", server.handleGet)

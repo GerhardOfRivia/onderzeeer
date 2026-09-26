@@ -279,20 +279,15 @@ func newHandlerForListener(manager *control.Manager, logger *slog.Logger, token,
 
 	mux := http.NewServeMux()
 	publicReads := make(map[string]bool)
-	read := func(pattern string, handler http.HandlerFunc) {
+	for pattern, handler := range api.routes() {
 		mux.HandleFunc(pattern, handler)
-		if publicRead {
+		if publicRead && strings.HasPrefix(pattern, "GET ") {
 			publicReads[pattern] = true
 		}
 	}
-	read("GET /api/v1/info", api.handleInfo)
-	read("GET /api/v1/queues", api.handleQueues)
-	read("GET /api/v1/queues/{queueID}/jobs", api.handleJobs)
-	read("GET /api/v1/queues/{queueID}/jobs/{jobID}", api.handleJob)
-	read("GET /api/v1/queues/{queueID}/commands/{commandID}/output", api.handleCommandOutput)
-	read("GET /api/v1/instances", api.handleInstances)
-	mux.HandleFunc("POST /api/v1/queues/{queueID}/start", api.handleStart)
-	mux.HandleFunc("POST /api/v1/instances/{instanceID}/stop", api.handleStop)
+	if err := registerDocs(mux, dist, version, publicReads); err != nil {
+		return nil, err
+	}
 	mux.HandleFunc("/", func(output http.ResponseWriter, request *http.Request) {
 		if isAPIPath(request.URL.Path) {
 			writeAPIError(output, http.StatusNotFound, "not_found", "API endpoint not found")

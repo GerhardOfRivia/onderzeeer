@@ -13,6 +13,7 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY web/ ./
+COPY internal/webui/openapi.json /src/internal/webui/openapi.json
 RUN npm run build
 
 # Build both binaries; the client is also used for the health check.
