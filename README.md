@@ -327,7 +327,8 @@ onderzeeer logs incoming 42
 onderzeeer job incoming 42 --rm
 ```
 
-`status` prints counts; `queue` lists queued, pending, and running jobs; `jobs` lists job
+`status` prints counts, database/WAL sizes, reusable database space, and available
+filesystem space; `queue` lists queued, pending, and running jobs; `jobs` lists job
 history. `job` shows a job's runs and commands, and `logs` prints captured command
 stdout and stderr. These commands read through `onderzeeerd` and accept `--socket`.
 Stopped instances remain inspectable, even if their original YAML is gone.
@@ -339,6 +340,71 @@ its run and command history, including captured output. Running and pending
 jobs must be stopped first. Removal leaves the source file untouched and clears
 its discovery record, so a later discovery may enqueue that file again. This
 also works with `--local`, which opens the selected database for writing.
+
+### storage maintenance
+
+Job records are retained until explicitly removed. Captured output is retained
+indefinitely unless output retention is enabled or cleanup is requested.
+Each command attempt can retain roughly
+2 MiB of captured output (1 MiB per stream), so log volume, pipeline length,
+and retries determine storage growth.
+
+Preview and prune old captured output from one queue:
+
+```bash
+onderzeeer prune incoming --older-than 30d --dry-run
+onderzeeer prune incoming --older-than 30d
+onderzeeer prune incoming --older-than 90d --include-failed
+```
+
+The required age accepts whole days (`30d`) or Go durations (`720h`, `90m`).
+Only jobs completed strictly before the cutoff qualify. Successful jobs are
+selected by default; `--include-failed` also selects failed jobs. Queued,
+pending, and running jobs are always preserved, including their earlier attempts.
+Cleanup clears captured stdout/stderr for all attempts of eligible jobs and
+leaves a `captured output pruned` marker in the log view. It preserves job
+records, duplicate detection, command/run metadata, errors, exit codes, and
+watched or separately saved output files. It does not delete entire jobs.
+
+`--dry-run` reports the matching command count and captured byte count without
+changing history. These bytes are payload size, not a promise of disk space
+reclaimed. Pruning commits small batches; if interrupted, committed batches
+remain pruned and the command can safely be retried. Both maintenance commands
+require exactly one queue and accept `--socket`, or `--local` with a standalone
+config file. Their timeout defaults to 30 minutes; override it with `--timeout`.
+
+For opt-in automatic retention, set these fields in the instance YAML:
+
+```yaml
+database:
+  output_retention: 720h          # 30 days; omitted or 0s disables cleanup
+  retention_include_failed: false
+  warn_size_bytes: 10737418240    # database + WAL; default 10 GiB
+  warn_free_percent: 10           # available filesystem space; default 10%
+```
+
+Retention runs at instance startup and hourly while the instance runs. It uses
+the same pruning rules as the CLI. Errors are logged and retried on the next
+pass. Warning thresholds are checked on the same schedule and reported by
+`status` and `system`; set either threshold to zero to disable that warning.
+Disk availability is reported on Linux and macOS. Storage warnings do not pause
+jobs or delete data. Stopped queues can be maintained manually. For a managed
+instance, stop it and start its config path again to apply YAML changes.
+
+Pruning makes database pages reusable but does not shrink the database file.
+To return unused space to the filesystem, stop the instance and compact it:
+
+```bash
+onderzeeer stop incoming
+onderzeeer compact incoming
+onderzeeer start incoming
+```
+
+Compaction runs SQLite `VACUUM` and truncates the WAL. It refuses active managed
+instances and queues with running/pending jobs. Stop all standalone writers
+before using `compact --local`. Compaction checks for available space of at
+least twice the database plus WAL size when disk reporting is available;
+it may take time for large databases. Automatic retention never compacts.
 
 Use `--local` to inspect a standalone or legacy queue directly, without a daemon:
 

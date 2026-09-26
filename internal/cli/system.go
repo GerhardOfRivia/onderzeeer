@@ -87,6 +87,26 @@ func systemCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) err
 	}
 	fmt.Fprintf(w, "Web public read\t%t\nActive queues\t%d\nInactive queues\t%d\n",
 		info.WebPublicRead, info.ActiveQueues, info.InactiveQueues)
+	if info.RegistryStorage != nil {
+		fmt.Fprintf(w, "Registry bytes\t%d\nRegistry WAL bytes\t%d\n", info.RegistryStorage.DatabaseBytes, info.RegistryStorage.WALBytes)
+		if info.RegistryStorage.Disk != nil {
+			fmt.Fprintf(w, "State disk available bytes\t%d\n", info.RegistryStorage.Disk.AvailableBytes)
+		}
+	}
+	if info.RegistryStorageError != "" {
+		fmt.Fprintf(w, "Registry storage error\t%s\n", info.RegistryStorageError)
+	}
+	for _, item := range info.QueueStorage {
+		if item.Error != "" {
+			fmt.Fprintf(w, "Queue %s storage error\t%s\n", item.Name, item.Error)
+			continue
+		}
+		fmt.Fprintf(w, "Queue %s database bytes\t%d\nQueue %s WAL bytes\t%d\n", item.Name, item.Storage.DatabaseBytes, item.Name, item.Storage.WALBytes)
+		if item.Storage.Disk != nil {
+			fmt.Fprintf(w, "Queue %s disk available bytes\t%d\n", item.Name, item.Storage.Disk.AvailableBytes)
+		}
+		printStorageWarnings(stderr, item.Name, item.Storage)
+	}
 	return errors.Join(append(purgeErrors, w.Flush())...)
 }
 

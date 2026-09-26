@@ -41,6 +41,7 @@ type configuredStore struct {
 type queueReader interface {
 	Close() error
 	Counts(context.Context) (queue.QueueCounts, error)
+	Storage(context.Context) (queue.StorageInfo, error)
 	ListJobs(context.Context, queue.JobFilter) ([]queue.Job, error)
 	GetJob(context.Context, int64) (*queue.Job, error)
 	ListRuns(context.Context, int64) ([]queue.Run, error)
@@ -100,6 +101,8 @@ func runVersionWithInput(args []string, stdin io.Reader, stdout, stderr io.Write
 		err = psCommand(args[1:], stdout, stderr)
 	case "system":
 		err = systemCommand(args[1:], stdin, stdout, stderr)
+	case "prune", "compact":
+		err = maintenanceCommand(args[0], args[1:], stdout, stderr)
 	case "stop":
 		err = stopCommand(args[1:], stdout, stderr)
 	case "status":
@@ -159,10 +162,16 @@ func statusCommand(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(w, "RUNNING\t%d\n", counts.Running)
 		fmt.Fprintf(w, "SUCCEEDED\t%d\n", counts.Succeeded)
 		fmt.Fprintf(w, "FAILED\t%d\n", counts.Failed)
+		storage, err := storageFor(ctx, stores[0])
+		if err != nil {
+			return err
+		}
+		printStorage(w, storage)
+		printStorageWarnings(stderr, stores[0].path, storage)
 		return w.Flush()
 	}
 
-	fmt.Fprintln(w, "CONFIG\tDATABASE\tTOTAL\tQUEUED\tPENDING\tRUNNING\tSUCCEEDED\tFAILED")
+	fmt.Fprintln(w, "CONFIG\tDATABASE\tTOTAL\tQUEUED\tPENDING\tRUNNING\tSUCCEEDED\tFAILED\tDATABASE BYTES\tWAL BYTES\tREUSABLE BYTES\tDISK AVAILABLE BYTES")
 	var total queue.QueueCounts
 	for _, source := range stores {
 		counts, err := source.store.Counts(ctx)
@@ -175,9 +184,18 @@ func statusCommand(args []string, stdout, stderr io.Writer) error {
 		total.Running += counts.Running
 		total.Succeeded += counts.Succeeded
 		total.Failed += counts.Failed
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\n",
+		storage, err := storageFor(ctx, source)
+		if err != nil {
+			return fmt.Errorf("storage %s: %w", source.path, err)
+		}
+		free := "unavailable"
+		if storage.Disk != nil {
+			free = strconv.FormatUint(storage.Disk.AvailableBytes, 10)
+		}
+		printStorageWarnings(stderr, source.path, storage)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
 			source.path, source.config.Database.Path, counts.Total, counts.Queued,
-			counts.Pending, counts.Running, counts.Succeeded, counts.Failed)
+			counts.Pending, counts.Running, counts.Succeeded, counts.Failed, storage.DatabaseBytes, storage.WALBytes, storage.ReusableBytes, free)
 	}
 	fmt.Fprintf(w, "TOTAL\t-\t%d\t%d\t%d\t%d\t%d\t%d\n",
 		total.Total, total.Queued, total.Pending, total.Running, total.Succeeded, total.Failed)
@@ -524,9 +542,15 @@ func newFlagSet(name string, output io.Writer, usage string) *flag.FlagSet {
 			fmt.Fprintln(output, "\nRuns in the foreground with its own queue database. Does not contact onderzeeerd.")
 		case "check", "parse":
 			fmt.Fprintln(output, "\nNo onderzeeerd required. Does not contact the daemon or execute pipeline commands.")
-		case "status", "queue", "jobs", "job", "logs":
+		case "status", "queue", "jobs", "job", "logs", "prune", "compact":
 			fmt.Fprintln(output, "\nSelect a managed instance by name, ID, or config path. Requires onderzeeerd.")
-			fmt.Fprintln(output, "Use --local with a config path to inspect a standalone run's database.")
+			fmt.Fprintln(output, "Use --local with a config path to access a standalone run's database.")
+			if name == "prune" {
+				fmt.Fprintln(output, "Removes captured stdout/stderr only; retains job records and duplicate detection.")
+			}
+			if name == "compact" {
+				fmt.Fprintln(output, "Shrinks the database with VACUUM. Stop the instance or all standalone writers first.")
+			}
 		case "onderzeeerd":
 			fmt.Fprintln(output, "\nStarts the daemon; no existing onderzeeerd is required.")
 		}
@@ -721,5 +745,7 @@ Requires a running onderzeeerd:
   onderzeeer jobs <instance-or-config> [--status status] [--watch name] [--socket path]
   onderzeeer job <instance-or-config> <id> [--rm] [--socket path]
   onderzeeer logs <instance-or-config> <id> [--socket path]
+  onderzeeer prune <instance-or-config> --older-than age [--dry-run] [--include-failed]
+  onderzeeer compact <instance-or-config> [--socket path]
   Start the daemon separately with: onderzeeerd`)
 }

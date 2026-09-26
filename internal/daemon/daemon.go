@@ -48,6 +48,9 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 	if err := cfg.ValidateResources(); err != nil {
 		return fmt.Errorf("daemon: validate config: %w", err)
 	}
+	if err := cfg.Database.ValidateMaintenance(); err != nil {
+		return fmt.Errorf("daemon: validate config: %w", err)
+	}
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -119,6 +122,12 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	maintenanceDone := make(chan struct{})
+	go func() {
+		defer close(maintenanceDone)
+		maintainQueue(runContext, store, cfg.Database, logger)
+	}()
+	defer func() { cancel(); <-maintenanceDone }()
 	type result struct {
 		component string
 		err       error

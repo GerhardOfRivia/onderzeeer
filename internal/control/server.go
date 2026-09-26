@@ -140,6 +140,7 @@ func NewServer(socketPath string, manager *Manager, logger *slog.Logger) (*Serve
 	mux.HandleFunc("POST /v1/run", server.handleRun)
 	mux.HandleFunc("GET /v1/queues", server.handleQueueSelection)
 	mux.HandleFunc("GET /v1/queues/{selector}/{operation}", server.handleQueueRead)
+	mux.HandleFunc("POST /v1/queues/{selector}/{operation}", server.handleQueueMaintenance)
 	mux.HandleFunc("DELETE /v1/queues/{selector}/jobs/{jobID}", server.handleJobRemove)
 	server.httpServer = &http.Server{
 		Handler:           mux,

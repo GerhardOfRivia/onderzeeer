@@ -93,7 +93,11 @@ type QueueConfig struct {
 
 // DatabaseConfig locates the authoritative SQLite queue.
 type DatabaseConfig struct {
-	Path string `yaml:"path"`
+	Path                   string    `yaml:"path"`
+	OutputRetention        *Duration `yaml:"output_retention,omitempty" json:",omitempty"`
+	RetentionIncludeFailed bool      `yaml:"retention_include_failed,omitempty" json:",omitempty"`
+	WarnSizeBytes          *int64    `yaml:"warn_size_bytes,omitempty" json:",omitempty"`
+	WarnFreePercent        *float64  `yaml:"warn_free_percent,omitempty" json:",omitempty"`
 }
 
 // WatchConfig describes one filesystem source and its command pipeline.
@@ -581,6 +585,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Database.Path) == "" {
 		return errors.New("database.path is required")
+	}
+	if err := c.Database.ValidateMaintenance(); err != nil {
+		return err
 	}
 	if len(c.Watches) == 0 {
 		return errors.New("at least one watch is required")

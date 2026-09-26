@@ -82,6 +82,11 @@ func (server *Server) handleQueueRead(output http.ResponseWriter, request *http.
 	values := request.URL.Query()
 	var result any
 	switch request.PathValue("operation") {
+	case "storage":
+		var info queue.StorageInfo
+		info, err = store.Storage(ctx)
+		info.SetWarnings(server.manager.databaseConfig(instance.ID).WarningThresholds())
+		result = info
 	case "counts":
 		result, err = store.Counts(ctx)
 	case "jobs":

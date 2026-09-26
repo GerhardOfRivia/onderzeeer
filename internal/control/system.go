@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
+
+	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 )
 
 // SystemConfig contains the daemon's effective startup settings. It reports
@@ -21,16 +24,27 @@ type SystemConfig struct {
 
 type SystemInfo struct {
 	SystemConfig
-	PID            int       `json:"pid"`
-	StartedAt      time.Time `json:"started_at"`
-	SocketPath     string    `json:"socket_path"`
-	SocketLockPath string    `json:"socket_lock_path"`
-	StateDirectory string    `json:"state_directory"`
-	RegistryPath   string    `json:"registry_path"`
-	StateLockPath  string    `json:"state_lock_path"`
-	QueueDirectory string    `json:"queue_directory"`
-	ActiveQueues   int       `json:"active_queues"`
-	InactiveQueues int       `json:"inactive_queues"`
+	PID                  int                `json:"pid"`
+	StartedAt            time.Time          `json:"started_at"`
+	SocketPath           string             `json:"socket_path"`
+	SocketLockPath       string             `json:"socket_lock_path"`
+	StateDirectory       string             `json:"state_directory"`
+	RegistryPath         string             `json:"registry_path"`
+	StateLockPath        string             `json:"state_lock_path"`
+	QueueDirectory       string             `json:"queue_directory"`
+	ActiveQueues         int                `json:"active_queues"`
+	InactiveQueues       int                `json:"inactive_queues"`
+	QueueStorage         []QueueStorage     `json:"queue_storage"`
+	RegistryStorage      *queue.StorageInfo `json:"registry_storage,omitempty"`
+	RegistryStorageError string             `json:"registry_storage_error,omitempty"`
+}
+
+type QueueStorage struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	DatabasePath string            `json:"database_path"`
+	Storage      queue.StorageInfo `json:"storage"`
+	Error        string            `json:"error,omitempty"`
 }
 
 // SetSystemConfig records resolved startup settings before Serve is called.
@@ -54,6 +68,7 @@ func (server *Server) handleSystem(output http.ResponseWriter, request *http.Req
 		info.QueueDirectory = filepath.Join(registry.directory, "queues")
 	}
 	for _, runtime := range server.manager.instances {
+		info.QueueStorage = append(info.QueueStorage, QueueStorage{ID: runtime.view.ID, Name: runtime.view.Name, DatabasePath: runtime.view.DatabasePath})
 		if runtime.view.Active() {
 			info.ActiveQueues++
 		} else {
@@ -61,6 +76,25 @@ func (server *Server) handleSystem(output http.ResponseWriter, request *http.Req
 		}
 	}
 	server.manager.mu.Unlock()
+	if info.RegistryPath != "" {
+		storage, err := queue.FileStorage(info.RegistryPath)
+		if err != nil {
+			info.RegistryStorageError = err.Error()
+		} else {
+			info.RegistryStorage = &storage
+		}
+	}
+	sort.Slice(info.QueueStorage, func(i, j int) bool { return info.QueueStorage[i].Name < info.QueueStorage[j].Name })
+	for i := range info.QueueStorage {
+		item := &info.QueueStorage[i]
+		storage, err := queue.FileStorage(item.DatabasePath)
+		if err != nil {
+			item.Error = err.Error()
+		} else {
+			storage.SetWarnings(server.manager.databaseConfig(item.ID).WarningThresholds())
+			item.Storage = storage
+		}
+	}
 	writeJSON(output, http.StatusOK, info)
 }
 

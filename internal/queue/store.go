@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS command_executions (
 
 CREATE INDEX IF NOT EXISTS command_executions_run_idx
     ON command_executions (run_id, sequence);
+CREATE INDEX IF NOT EXISTS command_executions_retained_output_idx
+    ON command_executions (id) WHERE ` + retainedOutputPredicate + `;
 `
 
 // SQLite primary result codes occupy the low byte of extended result codes.
