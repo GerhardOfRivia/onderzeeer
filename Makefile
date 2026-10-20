@@ -3,7 +3,7 @@
 OUTPUT ?= bin
 ONDERZEEER_OUTPUT ?= $(OUTPUT)/onderzeeer
 ONDERZEEERD_OUTPUT ?= $(OUTPUT)/onderzeeerd
-SEMVER ?= 1.3.0
+SEMVER ?= 1.3.1
 VERSION ?= $(SEMVER)-dev
 RELEASE_TAG ?= v$(SEMVER)
 LDFLAGS = -ldflags "-X main.Version=$(VERSION)"
@@ -47,6 +47,7 @@ build-podman:
 
 web:
 	# npm ci && npm run build
+	docker run --rm --user $$(id -u):$$(id -g) --mount type=bind,src=$(CURDIR),dst=/workspace -w /workspace/web node:22-bookworm-slim /bin/sh -lc 'npm ci && npm audit fix'
 	docker run --rm --user $$(id -u):$$(id -g) --mount type=bind,src=$(CURDIR),dst=/workspace -w /workspace/web node:22-bookworm-slim /bin/sh -lc 'npm ci && npm run build'
 	rm -rf ./web/node_modules ./web/tsconfig.app.tsbuildinfo ./web/tsconfig.node.tsbuildinfo
 
