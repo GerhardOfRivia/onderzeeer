@@ -20,7 +20,7 @@ export class APIError extends Error {
   }
 }
 
-async function request<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   if (token) headers.set('Authorization', `Bearer ${token}`)
   headers.set('Accept', 'application/json')

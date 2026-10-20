@@ -3,7 +3,7 @@
   "info": {
     "title": "onderzeeer dashboard API",
     "version": "dev",
-    "description": "HTTP API served by onderzeeerd when --web-listen is enabled. All paths are relative to this daemon.\n\nUse **Authorize** to enter the web token from the private token file shown in the daemon startup log. Enter only the token, without the Bearer prefix. Authorization is kept in memory and cleared when this page reloads.\n\nReads require authentication by default. With ONDERZEEER_WEB_PUBLIC_READ=true, GET operations accept anonymous requests; the served specification reflects that setting. An explicitly supplied invalid token is always rejected. Start and stop always require authentication and perform real control operations.\n\nThis reference and /openapi.json are readable without a token. They contain no queue data or credentials. The listener accepts localhost and loopback IP Host headers; wildcard listeners also accept remote literal IPs.\n\nThe CLI’s Unix-socket /v1/... control API is a separate transport and is not covered by this reference."
+    "description": "HTTP API served by onderzeeerd when --web-listen is enabled. All paths are relative to this daemon.\n\nUse **Authorize** to enter the web token from the private token file shown in the daemon startup log. Enter only the token, without the Bearer prefix. Authorization is kept in memory and cleared when this page reloads.\n\nReads require authentication by default. With ONDERZEEER_WEB_PUBLIC_READ=true, GET operations accept anonymous requests; the served specification reflects that setting. An explicitly supplied invalid token is always rejected. Start and stop always require authentication and perform real control operations.\n\nThis reference and /openapi.json are readable without a token. They contain no queue data or credentials. The listener accepts localhost and loopback IP Host headers; wildcard listeners also accept remote literal IPs.\n\nThe CLI\u2019s Unix-socket /v1/... control API is a separate transport and is not covered by this reference."
   },
   "servers": [
     {
@@ -27,6 +27,10 @@
     {
       "name": "Instances",
       "description": "Managed instance lifecycle."
+    },
+    {
+      "name": "Pipelines",
+      "description": "In-memory draft validation and command translation. No execution or filesystem writes."
     }
   ],
   "security": [
@@ -67,7 +71,7 @@
           "Queues"
         ],
         "summary": "List registered queues and job counts",
-        "description": "Includes queues belonging to stopped instances. A missing or unreadable database is reported in each queue’s database_state and error fields, with zero counts, without failing the whole response.",
+        "description": "Includes queues belonging to stopped instances. A missing or unreadable database is reported in each queue\u2019s database_state and error fields, with zero counts, without failing the whole response.",
         "responses": {
           "200": {
             "description": "List registered queues and job counts.",
@@ -517,6 +521,125 @@
               },
               "example": {}
             }
+          }
+        }
+      }
+    },
+    "/api/v1/pipelines/validate": {
+      "post": {
+        "operationId": "validatePipeline",
+        "tags": [
+          "Pipelines"
+        ],
+        "summary": "Validate pipeline YAML",
+        "description": "Requires a web token even in public-read mode and all existing same-origin request protections. Maximum JSON body: 2 MiB. Does not execute commands, access configuration files, create queues or change managed instances. Validation returns the first configuration error and any command warnings; paths are not resolved against the server filesystem. Shell operators and expansions are rejected by command parsing.",
+        "parameters": [
+          {
+            "name": "X-onderzeeer-Web",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "yaml"
+                ],
+                "properties": {
+                  "yaml": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "In-memory result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineValidation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/pipelines/parse": {
+      "post": {
+        "operationId": "parsePipelineCommand",
+        "tags": [
+          "Pipelines"
+        ],
+        "summary": "Parse a command into a pipeline fragment",
+        "description": "Requires a web token even in public-read mode and all existing same-origin request protections. Maximum JSON body: 2 MiB. Does not execute commands, access configuration files, create queues or change managed instances. Validation returns the first configuration error and any command warnings; paths are not resolved against the server filesystem. Shell operators and expansions are rejected by command parsing.",
+        "parameters": [
+          {
+            "name": "X-onderzeeer-Web",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "const": "1"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "command"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "In-memory result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineParseResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           }
         }
       }
@@ -1398,6 +1521,90 @@
         "type": "object",
         "additionalProperties": false,
         "example": {}
+      },
+      "PipelineDiagnostic": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "severity",
+          "message"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "syntax",
+              "configuration",
+              "warning"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          },
+          "column": {
+            "type": "integer"
+          }
+        }
+      },
+      "PipelineValidation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "valid",
+          "diagnostics"
+        ],
+        "properties": {
+          "valid": {
+            "type": "boolean"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PipelineDiagnostic"
+            }
+          }
+        },
+        "example": {
+          "valid": true,
+          "diagnostics": []
+        }
+      },
+      "PipelineParseResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "yaml",
+          "warnings"
+        ],
+        "properties": {
+          "yaml": {
+            "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "example": {
+          "yaml": "pipeline:\n  - name: echo\n    executor: command\n    program: echo\n",
+          "warnings": []
+        }
       }
     }
   }

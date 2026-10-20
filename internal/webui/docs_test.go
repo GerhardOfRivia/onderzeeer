@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -303,5 +304,22 @@ func TestAPIResponsesMatchOpenAPI(t *testing.T) {
 			check("POST", queuePath+"/start", "/api/v1/queues/{queueID}/start", testWebToken, 201, true)
 			check("POST", queuePath+"/start", "/api/v1/queues/{queueID}/start", testWebToken, 409, true)
 		})
+	}
+}
+
+// Vite may emit underscore-prefixed shared chunks. Plain recursive embedding
+// excludes those files even when index.html and its entry script are present.
+func TestEveryBuiltAssetIsEmbedded(t *testing.T) {
+	entries, err := os.ReadDir("dist/assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if _, err := embeddedAssets.ReadFile("dist/assets/" + entry.Name()); err != nil {
+			t.Errorf("missing built asset %s: %v", entry.Name(), err)
+		}
 	}
 }

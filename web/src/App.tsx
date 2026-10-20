@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { APIError, api } from './api'
+const PipelineEditor = lazy(() => import('./PipelineEditor'))
 import {
   applyTheme,
   persistThemePreference,
@@ -233,6 +234,9 @@ function Dashboard({
   onSignOut: (message?: string) => void
   onUnlock: () => void
 }) {
+  const [page, setPage] = useState<'dashboard' | 'editor'>('dashboard')
+  const [editorDirty, setEditorDirty] = useState(false)
+  const [editorOpened, setEditorOpened] = useState(false)
   const canControl = access.can_control
   const [queues, setQueues] = useState<QueueSummary[] | null>(null)
   const [instances, setInstances] = useState<Instance[] | null>(null)
@@ -549,15 +553,17 @@ function Dashboard({
           </div>
         </div>
         <div className="topbar-actions">
-          <a className="text-button" href="/docs/">API docs</a>
+          <button className="text-button" aria-pressed={page === 'dashboard'} onClick={() => setPage('dashboard')}>Dashboard</button>
+          <button className="text-button" aria-pressed={page === 'editor'} onClick={() => { setEditorOpened(true); setPage('editor') }}>Pipeline Editor</button>
+          <a className="text-button" href="/docs/" target="_blank" rel="noreferrer">API docs</a>
           <ThemeControl theme={theme} onChange={onThemeChange} />
           <span className={`connection-state ${refreshError ? 'offline' : lastUpdated ? 'online' : 'connecting'}`}>
             <i /> {refreshError ? 'Refresh failed' : lastUpdated ? 'Local daemon' : 'Connecting'}
           </span>
           {!canControl && <span className="read-only-badge">Read only</span>}
           {canControl
-            ? <button className="text-button" onClick={() => onSignOut()}>Lock</button>
-            : <button className="text-button" onClick={onUnlock}>Unlock controls</button>}
+            ? <button className="text-button" onClick={() => { if (!editorDirty || window.confirm('Discard unsaved pipeline edits and lock?')) onSignOut() }}>Lock</button>
+            : <button className="text-button" onClick={() => { if (!editorDirty || window.confirm('Export your draft first. Unlocking controls will discard unsaved pipeline edits. Continue?')) onUnlock() }}>Unlock controls</button>}
         </div>
       </header>
 
@@ -575,7 +581,8 @@ function Dashboard({
         </div>
       )}
 
-      <main className="workspace">
+      {editorOpened && <div hidden={page !== 'editor'}><Suspense fallback={<p>Loading Pipeline Editor…</p>}><PipelineEditor token={token} theme={theme} onDirtyChange={setEditorDirty} /></Suspense></div>}
+      <main className="workspace" hidden={page !== 'dashboard'}>
         <section className="page-intro">
           <div>
             <p className="eyebrow">Durable work</p>

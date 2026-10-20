@@ -4,35 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 
-	"github.com/GerhardOfRivia/onderzeeer/internal/config"
-	"gopkg.in/yaml.v3"
+	"github.com/GerhardOfRivia/onderzeeer/internal/commandparse"
 )
-
-type generatedPipeline struct {
-	Pipeline []generatedPipelineStep `yaml:"pipeline"`
-}
-
-type generatedPipelineStep struct {
-	Name          string              `yaml:"name"`
-	Executor      config.ExecutorType `yaml:"executor"`
-	Program       string              `yaml:"program,omitempty"`
-	Args          []string            `yaml:"args,omitempty"`
-	Image         string              `yaml:"image,omitempty"`
-	ContainerArgs []string            `yaml:"container_args,omitempty"`
-	Mounts        []generatedMount    `yaml:"mounts,omitempty"`
-	ContainerEnv  map[string]string   `yaml:"container_env,omitempty"`
-	Command       string              `yaml:"command,omitempty"`
-	CommandArgs   []string            `yaml:"command_args,omitempty"`
-}
-
-type generatedMount struct {
-	Source  string   `yaml:"source"`
-	Target  string   `yaml:"target"`
-	Options []string `yaml:"options,omitempty"`
-}
 
 func parseCommand(args []string, stdout, stderr io.Writer) error {
 	flags := newFlagSet("parse", stderr, "onderzeeer parse [--name name] -- <program> [argument ...]")
@@ -59,75 +34,15 @@ func parseCommand(args []string, stdout, stderr io.Writer) error {
 	if nameWasSet && stepName == "" {
 		return usageError{message: "parse --name must not be blank"}
 	}
-	executor := generatedExecutor(program)
-	commandArgs := append([]string(nil), invocation[1:]...)
-	if stepName == "" {
-		stepName = generatedStepName(program, executor, commandArgs)
+	result, warnings, err := commandparse.Parse(invocation, stepName)
+	if err != nil {
+		return err
 	}
-	step := generatedPipelineStep{
-		Name:     stepName,
-		Executor: executor,
-		Args:     commandArgs,
-	}
-	if executor == config.ExecutorCommand || program != string(executor) {
-		step.Program = program
-	}
-	if executor == config.ExecutorDocker || executor == config.ExecutorPodman {
-		structured, fallbackReason := parseStructuredContainerRun(executor, commandArgs)
-		if structured != nil {
-			step.Args = nil
-			step.Image = structured.image
-			step.ContainerArgs = structured.containerArgs
-			step.Mounts = structured.mounts
-			step.ContainerEnv = structured.containerEnv
-			step.Command = structured.command
-			step.CommandArgs = structured.commandArgs
-		} else if fallbackReason != "" {
-			fmt.Fprintf(stderr, "onderzeeer parse: warning: %s; emitted raw runtime args\n", fallbackReason)
-		}
-	}
-	command := config.CommandConfig{Executor: executor, Program: program, Args: commandArgs}
-	for _, warning := range command.Warnings() {
+	for _, warning := range warnings {
 		fmt.Fprintf(stderr, "onderzeeer parse: warning: %s\n", warning)
 	}
-
-	encoder := yaml.NewEncoder(stdout)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(generatedPipeline{Pipeline: []generatedPipelineStep{step}}); err != nil {
-		return fmt.Errorf("write pipeline config: %w", err)
-	}
-	if err := encoder.Close(); err != nil {
+	if _, err := io.WriteString(stdout, result); err != nil {
 		return fmt.Errorf("write pipeline config: %w", err)
 	}
 	return nil
-}
-
-func generatedExecutor(program string) config.ExecutorType {
-	switch filepath.Base(program) {
-	case string(config.ExecutorDocker):
-		return config.ExecutorDocker
-	case string(config.ExecutorPodman):
-		return config.ExecutorPodman
-	case string(config.ExecutorApptainer):
-		return config.ExecutorApptainer
-	default:
-		return config.ExecutorCommand
-	}
-}
-
-func generatedStepName(program string, executor config.ExecutorType, args []string) string {
-	name := strings.TrimSpace(filepath.Base(program))
-	if name == "" {
-		name = "command"
-	}
-	if executor != config.ExecutorCommand && len(args) > 0 {
-		action := args[0]
-		if action == "container" && len(args) > 1 {
-			action = args[1]
-		}
-		if action == "run" || action == "exec" {
-			name += "-" + action
-		}
-	}
-	return name
 }

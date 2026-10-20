@@ -1,4 +1,4 @@
-package cli
+package commandparse
 
 import (
 	"encoding/csv"

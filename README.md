@@ -1013,3 +1013,57 @@ make
 ```
 
 ![icon](icon.png)
+
+### Pipeline Editor
+
+Open **Pipeline Editor** in the web dashboard navigation. Unlock controls with the
+existing web token to use server validation and **Parse Command**, including when
+public-read mode is enabled. These two authenticated APIs only process text in
+memory; they never execute commands, open queues, or start instances.
+
+- **New** starts a small YAML draft. **Add Watch** creates an editable directory
+  watch; **Add Step** adds an intentionally incomplete step. Edit general queue,
+  database, reusable values, and resource settings in the expandable section.
+- Edit YAML on the left or Material UI fields on the right. Watches expand to
+  show their steps, executor settings, arguments, mounts, environment variables,
+  and resource requirements. Move steps up/down to change execution order.
+- Select an empty step with **Edit Step**, then choose **Parse Command**. Paste
+  one ordinary executable, Docker, Podman, or Apptainer invocation, optionally
+  supply a name, and review the generated fragment and warnings before choosing
+  **Use Step**. Docker/Podman translation uses the CLI parser, including its raw
+  argument fallback. The input tokenizer supports POSIX quotes, escaped spaces,
+  and backslash-newline continuation. It never expands variables or executes a
+  shell; shell operators/expansions require manual editing of a shell step.
+- Validation runs after a short typing pause or immediately with **Validate**.
+  It shares the Go decoding, defaults, and semantic rules used by `onderzeeer
+  check`. Green means valid; yellow means an incomplete draft, warnings, or
+  validation unavailable; red means YAML/schema/semantic errors. The first Go
+  configuration error is reported, with a clickable line/field location when
+  available. Validation does not check filesystem availability or resolve paths
+  against the server filesystem. Invalid YAML retains the last usable visual
+  preview and disables visual changes until its structure is repaired.
+- **Import YAML** reads a local file (up to 1 MiB), with confirmation before
+  replacing the draft. **Export** downloads the exact current YAML, even if it
+  is incomplete. Comments, templates, ordering, and unrelated keys are retained
+  through YAML document nodes; ordinary scalar edits patch the source directly.
+  Structural edits can normalize whitespace or quoting. Unknown keys are kept
+  for correction, but still fail the normal Go schema checks.
+- Undo/redo buttons and Ctrl/Cmd-Z (Shift-Z or Ctrl-Y to redo) cover both kinds
+  of edits. Tab inserts two spaces in YAML. The divider supports dragging and
+  arrow keys; narrow windows stack the panels. The validation area remains
+  visible as the YAML scrolls. Drafts remain in memory when switching dashboard
+  views; export before closing/reloading the page. Unsaved edits trigger a
+  leave-page warning and confirmation before New or Lock.
+
+There is no server-side arbitrary-path open/save API. Exporting a file does not
+change a registered queue or running instance: managed instances run validated
+configuration snapshots. Save the downloaded file to your intended configuration
+location, run `onderzeeer check <config>`, and use the existing explicit
+stop/re-registration/start workflow to apply it. Relative paths retain their
+normal meaning relative to the configuration file on registration.
+
+The editor uses the existing `make web` Docker build and embedded asset output.
+For frontend development, `cd web && npm ci && npm test && npm run build` runs
+component/document synchronization tests, checks OpenAPI, and builds the assets.
+Material UI is loaded separately when the editor is first opened; its Emotion
+styles require inline styles in the dashboard CSP (scripts remain self-only).

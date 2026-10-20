@@ -25,7 +25,9 @@ import (
 
 const shutdownTimeout = 5 * time.Second
 
-//go:embed dist/*
+// Include Vite shared chunks whose filenames may begin with an underscore.
+//
+//go:embed all:dist
 var embeddedAssets embed.FS
 
 // Server serves an embedded single-page application and its narrow JSON API.
@@ -353,7 +355,7 @@ func isAPIPath(requestPath string) bool {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
-		output.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'")
+		output.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'")
 		output.Header().Set("Referrer-Policy", "no-referrer")
 		output.Header().Set("X-Content-Type-Options", "nosniff")
 		output.Header().Set("X-Frame-Options", "DENY")

@@ -1,0 +1,81 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import PipelineEditor from './PipelineEditor'
+import { request } from './api'
+vi.mock('./api', () => ({ request: vi.fn() }))
+beforeEach(() => {
+  vi.mocked(request).mockResolvedValue({ valid: true, diagnostics: [] })
+})
+afterEach(() => { cleanup(); vi.clearAllMocks() })
+const renderEditor = () => render(<PipelineEditor token="token" theme="light" onDirtyChange={vi.fn()} />)
+const yaml = () => screen.getByRole('textbox', { name: 'Pipeline YAML' }) as HTMLTextAreaElement
+const valid = `watches:\n- name: imported\n  path: /data\n  pipeline: []\n`
+
+describe('Pipeline Editor synchronization', () => {
+  it('updates visual fields from YAML and YAML from fields', async () => {
+    renderEditor()
+    fireEvent.change(yaml(), { target: { value: valid } })
+    expect(screen.getByRole('textbox', { name: 'name' })).toHaveProperty('value', 'imported')
+    fireEvent.change(screen.getByRole('textbox', { name: 'name' }), { target: { value: 'renamed' } })
+    expect(yaml().value).toContain('name: renamed')
+    expect(screen.getByText('Unsaved changes')).toBeTruthy()
+    await waitFor(() => expect(request).toHaveBeenCalled())
+  })
+  it('retains stale preview and disables mutations until structure recovers', () => {
+    renderEditor()
+    fireEvent.change(yaml(), { target: { value: valid } })
+    fireEvent.change(yaml(), { target: { value: 'watches: [' } })
+    expect(screen.getByText(/Stale preview/)).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: 'name' })).toHaveProperty('value', 'imported')
+    expect(screen.getByRole('button', { name: 'Add Watch' }).closest('fieldset')?.disabled).toBe(true)
+    fireEvent.change(yaml(), { target: { value: valid } })
+    expect(screen.queryByText(/Stale preview/)).toBeNull()
+  })
+  it('adds watches and steps, confirms removal, and supports undo', async () => {
+    renderEditor()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Watch' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    expect(yaml().value).toContain('- {}')
+    expect(screen.getByRole('button', { name: 'Parse Command' })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Step' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(yaml().value).toContain('- {}')
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Step' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(yaml().value).toContain('pipeline: []')
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(yaml().value).toContain('- {}')
+  })
+  it('protects unsaved drafts from New and keeps validation errors actionable', async () => {
+    vi.mocked(request).mockResolvedValue({ valid: false, diagnostics: [{ kind: 'configuration', severity: 'error', message: 'watches[0].pipeline must contain at least one command', line: 4 }] })
+    renderEditor()
+    fireEvent.change(yaml(), { target: { value: valid } })
+    fireEvent.click(screen.getByRole('button', { name: 'New' }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(yaml().value).toBe(valid)
+    const diagnostic = await screen.findByRole('button', { name: /Line 4/ })
+    fireEvent.click(diagnostic)
+    expect(document.activeElement).toBe(yaml())
+    expect(yaml().selectionStart).toBe(valid.indexOf('  pipeline'))
+  })
+  it('previews and inserts parser output into the selected empty step', async () => {
+    vi.mocked(request).mockImplementation(async path => path.endsWith('/parse') ? { yaml: 'pipeline:\n- name: echo\n  executor: command\n  program: echo\n  args: [hello]\n', warnings: ['Example warning'] } : { valid: true, diagnostics: [] })
+    renderEditor()
+    fireEvent.click(screen.getByRole('button', { name: 'Add Watch' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Step' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Parse Command' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Command' }), { target: { value: 'echo hello' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Parse' }))
+    await within(dialog).findByText('Example warning')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use Step' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(yaml().value).toContain('program: echo')
+    expect(screen.getByRole('button', { name: 'Parse Command' })).toHaveProperty('disabled', true)
+  })
+})

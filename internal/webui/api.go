@@ -547,6 +547,10 @@ func validInstanceID(value string) bool {
 }
 
 func validateMutation(output http.ResponseWriter, request *http.Request) error {
+	return decodeMutation(output, request, &struct{}{}, maxMutationBody)
+}
+
+func decodeMutation(output http.ResponseWriter, request *http.Request, body any, limit int64) error {
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		return errors.New("Content-Type must be application/json")
@@ -564,11 +568,10 @@ func validateMutation(output http.ResponseWriter, request *http.Request) error {
 		}
 	}
 
-	request.Body = http.MaxBytesReader(output, request.Body, maxMutationBody)
+	request.Body = http.MaxBytesReader(output, request.Body, limit)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
-	var body struct{}
-	if err := decoder.Decode(&body); err != nil {
+	if err := decoder.Decode(body); err != nil {
 		return fmt.Errorf("decode JSON request: %w", err)
 	}
 	var extra any

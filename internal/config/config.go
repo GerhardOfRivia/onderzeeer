@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/csv"
 	"errors"
 	"fmt"
@@ -435,6 +436,26 @@ func load(filename string, managed bool) (*Config, error) {
 		return nil, fmt.Errorf("open config: %w", err)
 	}
 	defer file.Close()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := decode(data, managed)
+	if err != nil {
+		return nil, err
+	}
+	if err := resolveConfiguredPaths(cfg, filename, !managed); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// Decode validates a document entirely in memory using the same rules as Load.
+// It does not resolve filesystem paths or open databases.
+func Decode(data []byte) (*Config, error) { return decode(data, false) }
+
+func decode(data []byte, managed bool) (*Config, error) {
+	file := bytes.NewReader(data)
 	if err := validateResourceFields(file); err != nil {
 		return nil, fmt.Errorf("decode config resources: %w", err)
 	}
@@ -468,9 +489,6 @@ func load(filename string, managed bool) (*Config, error) {
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	if err := resolveConfiguredPaths(&cfg, filename, !managed); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

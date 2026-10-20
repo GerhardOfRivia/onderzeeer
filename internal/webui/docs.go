@@ -15,6 +15,8 @@ var openAPISpec []byte
 // routes is shared by registration and the documentation coverage test.
 func (api *apiServer) routes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
+		"POST /api/v1/pipelines/validate":                          api.handlePipelineValidate,
+		"POST /api/v1/pipelines/parse":                             api.handlePipelineParse,
 		"GET /api/v1/info":                                         api.handleInfo,
 		"GET /api/v1/queues":                                       api.handleQueues,
 		"GET /api/v1/queues/{queueID}/jobs":                        api.handleJobs,
