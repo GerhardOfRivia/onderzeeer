@@ -128,8 +128,8 @@ leave the supplied arguments unchanged.
 The daemon exposes its lifecycle API over a local Unix socket:
 
 ```text
-onderzeeerd [--state-dir path] [--socket path] [--web-listen address] [--log-level level]
-onderzeeer test <config>
+onderzeeerd [--state-dir path] [--socket path] [--web-listen address] [--metrics-listen address] [--log-level level]
+onderzeeer test [--metrics-listen address] <config>
 onderzeeer start <config-or-instance> [name] [--socket path]
 onderzeeer ps [--all] [--socket path]
 onderzeeer stop [--socket path] id-or-name [id-or-name ...]
@@ -200,7 +200,8 @@ onderzeeer system --purge
 
 `system` reports the daemon version, PID, start time, log level, control socket,
 state directory, registry database, queue directory, lock files, web listener,
-token file location, public-read setting, and active/inactive queue counts.
+token file location, public-read setting, metrics listener, and active/inactive
+queue counts.
 Settings come from the daemon, including its startup flags and environment;
 the daemon has no separate configuration file. Use `--socket` to select it.
 
@@ -312,6 +313,89 @@ API changes. The web build validates OpenAPI syntax, and Go tests check route
 coverage, authentication declarations, and actual responses against the schemas.
 Rebuild embedded assets with `make web` after changing the docs UI or its pinned
 Swagger UI dependency.
+
+## metrics
+
+`onderzeeerd` and `onderzeeer test` can expose a Prometheus text endpoint. It
+stays off unless a listen address is set, same as the dashboard, and it is a
+separate listener from `ONDERZEEER_WEB_LISTEN`. The address is a process
+setting, not a field in the config YAML. The daemon covers every instance it
+runs. A foreground `onderzeeer test` covers that one config.
+
+```bash
+onderzeeerd --metrics-listen 127.0.0.1:9090
+```
+
+`ONDERZEEER_METRICS_LISTEN` is the same setting. `--metrics-listen` overrides it.
+An empty value or `off` disables the endpoint, which is the default. `disabled`,
+`none`, and `-` also disable it. Loopback and `localhost` are accepted. A
+wildcard (`0.0.0.0:9090` or `[::]:9090`) is accepted and logged as a warning,
+because scrapes are unauthenticated. Any other address is refused.
+
+```bash
+onderzeeer test --metrics-listen 127.0.0.1:9090 csv_pipeline.yaml
+```
+
+Scrape `GET /metrics`:
+
+```yaml
+scrape_configs:
+  - job_name: onderzeeer
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+```
+
+Labels stay small: HTTP method, route, and status class; file result; job
+outcome; command executor and result; resource-wait result; and instance
+outcome. Paths, watch names, instance names, command names, and job ids are not
+labels. An unexpected label value is reported as `other`.
+
+HTTP route labels are the fixed dashboard API patterns (`/api/v1/queues`,
+`/api/v1/queues/{queueID}/jobs`, and the other registered routes) plus `page`,
+`asset`, `docs`, and `unmatched`. Asset filenames are not labels. Command
+executor is `command`, `shell`, `docker`, `podman`, or `apptainer`.
+
+Histograms use buckets from 5ms through 30s for dashboard requests and from
+50ms through 2h for jobs, commands, resource waits, and instances. They also
+export `_bucket`, `_sum`, and `_count`.
+
+| Name | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `onderzeeer_http_requests_total` | counter | `method`, `route`, `code` | Dashboard requests. `method` is `GET`, `POST`, `HEAD`, or `other`. `code` is `2xx`, `3xx`, `4xx`, or `5xx`. |
+| `onderzeeer_http_request_duration_seconds` | histogram | `method`, `route` | Time to handle one dashboard request. |
+| `onderzeeer_files_total` | counter | `result` | Stable files finished by a watcher. `result` is `delivered` or `skipped`. |
+| `onderzeeer_files_pending` | gauge | | Files waiting to settle. |
+| `onderzeeer_watcher_errors_total` | counter | | Watcher failures reported to the log. Cancellation is not included. |
+| `onderzeeer_jobs_enqueued_total` | counter | `result` | Enqueue attempts. `result` is `created` or `duplicate`. |
+| `onderzeeer_jobs_total` | counter | `outcome` | Pipeline attempts. `outcome` is `succeeded`, `failed`, `retried`, or `interrupted`. |
+| `onderzeeer_job_duration_seconds` | histogram | `outcome` | Wall time of one pipeline attempt, including its commands. |
+| `onderzeeer_jobs_active` | gauge | | Pipeline attempts currently executing. |
+| `onderzeeer_jobs_waiting_resources` | gauge | | Attempts blocked on a shared resource. |
+| `onderzeeer_jobs_recovered_total` | counter | | Running or pending jobs requeued after a process restart. |
+| `onderzeeer_commands_total` | counter | `executor`, `result` | Finished commands. `result` is `succeeded` or `failed`. |
+| `onderzeeer_command_duration_seconds` | histogram | `executor`, `result` | Time to run one command. |
+| `onderzeeer_commands_active` | gauge | | Commands currently running. |
+| `onderzeeer_resource_waits_total` | counter | `result` | Shared resource waits. `result` is `acquired` or `canceled`. |
+| `onderzeeer_resource_wait_duration_seconds` | histogram | `result` | Time spent waiting for a shared resource. |
+| `onderzeeer_instances_active` | gauge | | Daemon-managed instances currently running. Zero for `onderzeeer test`. |
+| `onderzeeer_instances_total` | counter | `outcome` | Instances that stopped. `outcome` is `exited` or `failed`. |
+| `onderzeeer_instance_duration_seconds` | histogram | `outcome` | How long a daemon-managed instance ran. |
+| `onderzeeer_build_info` | gauge | `version` | Always 1. The `version` label is the binary version (`dev` when built without an override). |
+
+The same registry includes the standard Go collectors (`go_goroutines`,
+`go_threads`, `go_info`, `go_gc_duration_seconds`, `go_memstats_*`, and the
+default `runtime/metrics` series) and process collectors
+(`process_cpu_seconds_total`, `process_resident_memory_bytes`,
+`process_virtual_memory_bytes`, `process_virtual_memory_max_bytes`,
+`process_open_fds`, `process_max_fds`, `process_start_time_seconds`). Those
+names are not prefixed with `onderzeeer_`.
+
+`onderzeeer test` does not run daemon-managed instances, so the instance gauges
+stay at zero there. File, job, and command series move in both processes.
+Dashboard HTTP series move only while the web listener is enabled. The fixed
+job, command, file, resource, and instance series are created at startup, so a
+fresh process reports zeros. A command canceled because the process is shutting
+down is not counted; a command timeout is a failure.
 
 ## queue and history inspection
 
@@ -860,6 +944,15 @@ its port only on the host loopback address. Other containers with network access
 to this container may still reach it. Keep the bearer token private, and do not
 expose its unencrypted HTTP listener to an untrusted network.
 
+Prometheus metrics stay off unless you set a listen address. Inside the
+container that address has to be a wildcard, and the published port should stay
+on the host loopback. Scrapes are unauthenticated:
+
+```bash
+--env ONDERZEEER_METRICS_LISTEN=0.0.0.0:9090 \
+--publish 127.0.0.1:9090:9090
+```
+
 ## systemd
 
 Install the binaries and [example unit](contrib/systemd/onderzeeer.service),
@@ -895,6 +988,8 @@ ONDERZEEER_SOCKET=/run/onderzeeer/onderzeeer.sock
 # ONDERZEEER_WEB_LISTEN=127.0.0.1:8080
 # Optional public viewing; start/stop still requires a token.
 # ONDERZEEER_WEB_PUBLIC_READ=true
+# Optional; Prometheus /metrics is disabled when this is unset.
+# ONDERZEEER_METRICS_LISTEN=127.0.0.1:9090
 ```
 
 The unit restores registered instances and restarts after failures. Register

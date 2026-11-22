@@ -18,6 +18,7 @@ import (
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/control"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 )
 
@@ -72,6 +73,7 @@ func runVersionWithInput(args []string, stdin io.Reader, stdout, stderr io.Write
 	if stderr == nil {
 		stderr = io.Discard
 	}
+	metrics.SetVersion(version)
 	if len(args) == 0 {
 		printUsage(stderr)
 		return 2
@@ -733,7 +735,7 @@ No onderzeeerd required:
   onderzeeer version
   onderzeeer check [--raw] <config>
   onderzeeer parse [--name name] -- <program> [argument ...]
-  onderzeeer test <config>
+  onderzeeer test [--metrics-listen address] <config>
 
 Requires a running onderzeeerd:
   onderzeeer system [--purge] [--socket path]

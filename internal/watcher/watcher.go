@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -801,12 +802,14 @@ func (w *Watcher) schedule(ctx context.Context, watchIndex int, filename string)
 	w.pending[key] = pending
 	w.wait.Add(1)
 	w.mu.Unlock()
+	metrics.FilesPending(1)
 	go w.settle(ctx, key, pending)
 	return nil
 }
 
 func (w *Watcher) settle(ctx context.Context, key string, pending *pendingFile) {
 	defer w.wait.Done()
+	defer metrics.FilesPending(-1)
 	spec := w.watches[pending.watchIndex]
 	for {
 		w.mu.Lock()
@@ -838,6 +841,7 @@ func (w *Watcher) settle(ctx context.Context, key string, pending *pendingFile) 
 		w.mu.Unlock()
 		if skip {
 			if w.finishPendingIfCurrent(key, pending, version) {
+				metrics.File("skipped")
 				return
 			}
 			continue
@@ -853,6 +857,7 @@ func (w *Watcher) settle(ctx context.Context, key string, pending *pendingFile) 
 			w.reportError(fmt.Errorf("handle %s for watch %q: %w", pending.path, spec.config.Name, err))
 			return
 		}
+		metrics.File("delivered")
 
 		w.mu.Lock()
 		w.recordDeliveredLocked(key, file.Fingerprint)
@@ -897,6 +902,7 @@ func (w *Watcher) removePending(key string, pending *pendingFile) {
 }
 
 func (w *Watcher) reportError(err error) {
+	metrics.WatcherError()
 	select {
 	case w.errors <- err:
 	default:

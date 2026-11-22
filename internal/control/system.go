@@ -14,12 +14,14 @@ import (
 // SystemConfig contains the daemon's effective startup settings. It reports
 // the token's location, never the token itself.
 type SystemConfig struct {
-	Version       string `json:"version"`
-	LogLevel      string `json:"log_level"`
-	WebListen     string `json:"web_listen"`
-	WebAddress    string `json:"web_address"`
-	WebTokenPath  string `json:"web_token_path"`
-	WebPublicRead bool   `json:"web_public_read"`
+	Version        string `json:"version"`
+	LogLevel       string `json:"log_level"`
+	WebListen      string `json:"web_listen"`
+	WebAddress     string `json:"web_address"`
+	WebTokenPath   string `json:"web_token_path"`
+	WebPublicRead  bool   `json:"web_public_read"`
+	MetricsListen  string `json:"metrics_listen"`
+	MetricsAddress string `json:"metrics_address"`
 }
 
 type SystemInfo struct {

@@ -302,7 +302,7 @@ func TestManagedCommandHelp(t *testing.T) {
 		command string
 		usage   string
 	}{
-		{command: "test", usage: "Usage: onderzeeer test <config>"},
+		{command: "test", usage: "Usage: onderzeeer test [--metrics-listen address] <config>"},
 		{command: "start", usage: "Usage: onderzeeer start <config-or-instance> [name] [--socket path]"},
 		{command: "ps", usage: "Usage: onderzeeer ps [--all] [--socket path]"},
 		{command: "stop", usage: "Usage: onderzeeer stop [--socket path] <id-or-name> [id-or-name ...]"},
@@ -355,7 +355,7 @@ func TestRunDaemonUsage(t *testing.T) {
 	if code := RunDaemon([]string{"--help"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("RunDaemon(--help) code = %d, stderr = %q", code, stderr.String())
 	}
-	if want := "onderzeeerd [--socket path] [--web-listen address] [--log-level level]"; !strings.Contains(stdout.String(), want) {
+	if want := "onderzeeerd [--socket path] [--web-listen address] [--metrics-listen address] [--log-level level]"; !strings.Contains(stdout.String(), want) {
 		t.Fatalf("RunDaemon(--help) output = %q, want it to contain %q", stdout.String(), want)
 	}
 	if stderr.Len() != 0 {

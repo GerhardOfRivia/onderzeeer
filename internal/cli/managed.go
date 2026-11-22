@@ -17,6 +17,7 @@ import (
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/control"
 	"github.com/GerhardOfRivia/onderzeeer/internal/daemon"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 )
 
 const controlTimeout = 30 * time.Second
@@ -55,7 +56,8 @@ func startCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func testCommand(args []string, stdout, stderr io.Writer) error {
-	flags := newFlagSet("test", stderr, "onderzeeer test <config>")
+	flags := newFlagSet("test", stderr, "onderzeeer test [--metrics-listen address] <config>")
+	metricsListen := flags.String("metrics-listen", metricsListenDefault(), metrics.ListenHelp)
 	if err := parseFlags(flags, args); err != nil {
 		return err
 	}
@@ -82,6 +84,11 @@ func testCommand(args []string, stdout, stderr io.Writer) error {
 	}()
 
 	return testSelectedConfig(runContext, flags.Arg(0), stdout, func(ctx context.Context, configs []daemon.NamedConfig, logger *slog.Logger) error {
+		stopMetrics, err := startMetrics(ctx, strings.TrimSpace(*metricsListen), logger)
+		if err != nil {
+			return err
+		}
+		defer stopMetrics()
 		if err := daemon.RunTest(ctx, configs[0].Config, logger.With("config", configs[0].Path)); err != nil {
 			return fmt.Errorf("test: config %q: %w", configs[0].Path, err)
 		}

@@ -85,6 +85,11 @@ func systemCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) err
 		fmt.Fprintf(w, "Web listen\t%s\nWeb address\t%s\nWeb token file\t%s\n",
 			info.WebListen, info.WebAddress, info.WebTokenPath)
 	}
+	if info.MetricsAddress == "" {
+		fmt.Fprintln(w, "Metrics\tdisabled")
+	} else {
+		fmt.Fprintf(w, "Metrics listen\t%s\nMetrics address\t%s\n", info.MetricsListen, info.MetricsAddress)
+	}
 	fmt.Fprintf(w, "Web public read\t%t\nActive queues\t%d\nInactive queues\t%d\n",
 		info.WebPublicRead, info.ActiveQueues, info.InactiveQueues)
 	if info.RegistryStorage != nil {

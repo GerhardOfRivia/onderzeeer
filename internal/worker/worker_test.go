@@ -13,6 +13,7 @@ import (
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/executor"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 )
 
@@ -737,6 +738,62 @@ func (runner *recordingExecutor) Execute(_ context.Context, command executor.Com
 		return executor.Result{ExitCode: 23, Stdout: "partial", Stderr: "broken"}, nil
 	}
 	return executor.Result{ExitCode: 0, Stdout: command.Name}, nil
+}
+
+func TestProcessJobRecordsMetrics(t *testing.T) {
+	store := &recordingStore{}
+	runner := &recordingExecutor{nonzeroName: "inspect"}
+	resolver := NewConfigResolver([]config.WatchConfig{{
+		Name: "incoming",
+		Pipeline: []config.CommandConfig{{
+			Name:     "inspect",
+			Executor: config.ExecutorShell,
+			Program:  "/bin/sh",
+			Command:  "printf ok",
+		}},
+	}})
+	pool, err := New(store, resolver, runner, Options{Workers: 1, RetryDelay: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "/tmp/secret-metrics-name.csv"
+	succeededBefore := metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": "succeeded"})
+	commandsBefore := metrics.Sample("onderzeeer_commands_total", map[string]string{"executor": "shell", "result": "failed"})
+	activeBefore := metrics.Sample("onderzeeer_jobs_active", nil)
+	if err := pool.processJob(context.Background(), &queue.Job{ID: 7, RunID: 1, WatchName: "incoming", Path: secret}); err == nil {
+		t.Fatal("nonzero command succeeded")
+	}
+	if metrics.Sample("onderzeeer_commands_total", map[string]string{"executor": "shell", "result": "failed"}) != commandsBefore+1 {
+		t.Fatal("failed shell command was not counted")
+	}
+	if metrics.Sample("onderzeeer_jobs_active", nil) != activeBefore {
+		t.Fatal("active jobs gauge leaked")
+	}
+
+	runner.nonzeroName = ""
+	store.failedJob = 0
+	if err := pool.processJob(context.Background(), &queue.Job{ID: 8, RunID: 2, WatchName: "incoming", Path: secret}); err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": "succeeded"}) != succeededBefore+1 {
+		t.Fatal("succeeded job was not counted")
+	}
+	if metrics.Sample("onderzeeer_commands_total", map[string]string{"executor": "shell", "result": "succeeded"}) < 1 {
+		t.Fatal("succeeded shell command was not counted")
+	}
+
+	store.failStatus = queue.StatusQueued
+	runner.failName = "inspect"
+	retriedBefore := metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": "retried"})
+	if err := pool.processJob(context.Background(), &queue.Job{ID: 9, RunID: 3, WatchName: "incoming", Path: secret}); err == nil {
+		t.Fatal("retryable failure was ignored")
+	}
+	if metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": "retried"}) != retriedBefore+1 {
+		t.Fatal("retried job was not counted")
+	}
+	if metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": secret}) != 0 {
+		t.Fatal("file path was used as a metric label")
+	}
 }
 
 func (runner *recordingExecutor) names() []string {

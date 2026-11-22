@@ -13,6 +13,7 @@ import (
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/executor"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
 )
@@ -273,9 +274,13 @@ func (pool *Pool) waitForPoll(ctx context.Context) bool {
 }
 
 func (pool *Pool) processJob(ctx context.Context, job *queue.Job) error {
+	started := time.Now()
+	metrics.JobsActive(1)
+	defer metrics.JobsActive(-1)
+
 	pipeline, err := pool.resolver.Resolve(job.WatchName)
 	if err != nil {
-		return pool.failJob(job, fmt.Errorf("resolve pipeline: %w", err))
+		return pool.failJob(job, fmt.Errorf("resolve pipeline: %w", err), started)
 	}
 
 	for index, configured := range pipeline {
@@ -285,7 +290,7 @@ func (pool *Pool) processJob(ctx context.Context, job *queue.Job) error {
 		})
 		expanded := expandConfiguredCommand(configured, expander)
 		if err := expanded.ValidateExecution(); err != nil {
-			return pool.failJob(job, fmt.Errorf("command %q after template expansion: %w", expanded.Name, err))
+			return pool.failJob(job, fmt.Errorf("command %q after template expansion: %w", expanded.Name, err), started)
 		}
 		if err := pool.processCommand(ctx, job, index, expanded); err != nil {
 			var waiting *resourceWaitError
@@ -296,9 +301,10 @@ func (pool *Pool) processJob(ctx context.Context, job *queue.Job) error {
 				if persistErr != nil {
 					return errors.Join(err, fmt.Errorf("requeue interrupted resource wait: %w", persistErr))
 				}
+				metrics.ObserveJob("interrupted", time.Since(started))
 				return err
 			}
-			return pool.failJob(job, err)
+			return pool.failJob(job, err, started)
 		}
 	}
 
@@ -308,6 +314,7 @@ func (pool *Pool) processJob(ctx context.Context, job *queue.Job) error {
 	if err != nil {
 		return fmt.Errorf("mark job succeeded: %w", err)
 	}
+	metrics.ObserveJob("succeeded", time.Since(started))
 	return nil
 }
 
@@ -324,11 +331,16 @@ func (pool *Pool) processCommand(ctx context.Context, job *queue.Job, index int,
 			return fmt.Errorf("mark job pending: %w", err)
 		}
 		logger.Info("waiting for resource")
+		metrics.JobsWaiting(1)
+		waitStarted := time.Now()
 		unlock, err := pool.resources.Acquire(ctx, expanded.Resources)
+		metrics.JobsWaiting(-1)
 		if err != nil {
+			metrics.ObserveResourceWait("canceled", time.Since(waitStarted))
 			logger.Info("resource wait canceled", "error", err)
 			return &resourceWaitError{fmt.Errorf("command %q waiting for resource %q: %w", expanded.Name, expanded.Resources, err)}
 		}
+		metrics.ObserveResourceWait("acquired", time.Since(waitStarted))
 		logger.Info("resource acquired")
 		var once sync.Once
 		release = func() {
@@ -370,10 +382,20 @@ func (pool *Pool) processCommand(ctx context.Context, job *queue.Job, index int,
 		"args", command.Args,
 	)
 
+	execStarted := time.Now()
+	metrics.CommandsActive(1)
 	result, executionErr := pool.executor.Execute(ctx, command)
+	metrics.CommandsActive(-1)
 	release()
 	if executionErr == nil && result.ExitCode != 0 {
 		executionErr = fmt.Errorf("command exited with code %d", result.ExitCode)
+	}
+	if !commandCanceled(ctx, executionErr, result) {
+		commandOutcome := "succeeded"
+		if executionErr != nil {
+			commandOutcome = "failed"
+		}
+		metrics.ObserveCommand(string(expanded.Executor), commandOutcome, commandElapsed(result, execStarted))
 	}
 	executionErr = withFailureOutput(executionErr, result)
 	commandStatus := queue.CommandSucceeded
@@ -459,13 +481,32 @@ func truncateFailureDetail(detail string) string {
 	return string(runes[:maxFailureDetailRunes-len(suffix)]) + suffix
 }
 
-func (pool *Pool) failJob(job *queue.Job, cause error) error {
+func commandCanceled(ctx context.Context, executionErr error, result executor.Result) bool {
+	if executionErr == nil || result.TimedOut {
+		return false
+	}
+	return errors.Is(executionErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
+}
+
+func commandElapsed(result executor.Result, started time.Time) time.Duration {
+	if !result.StartedAt.IsZero() && !result.FinishedAt.IsZero() && !result.FinishedAt.Before(result.StartedAt) {
+		return result.FinishedAt.Sub(result.StartedAt)
+	}
+	return time.Since(started)
+}
+
+func (pool *Pool) failJob(job *queue.Job, cause error, started time.Time) error {
 	persistContext, cancel := pool.persistenceContext()
 	status, failErr := pool.store.Fail(persistContext, job.ID, job.RunID, cause.Error(), pool.retryDelay)
 	cancel()
 	if failErr != nil {
 		return errors.Join(cause, fmt.Errorf("mark job failed: %w", failErr))
 	}
+	outcome := "failed"
+	if status == queue.StatusQueued {
+		outcome = "retried"
+	}
+	metrics.ObserveJob(outcome, time.Since(started))
 	pool.logger.Info("job attempt persisted",
 		"job_id", job.ID,
 		"run_id", job.RunID,
