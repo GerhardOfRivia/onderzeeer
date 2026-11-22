@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 )
 
@@ -88,6 +89,13 @@ func TestRunProcessesExistingFileAndStops(t *testing.T) {
 			}},
 		}},
 	}
+
+	createdBefore := metrics.Sample("onderzeeer_jobs_enqueued_total", map[string]string{"result": "created"})
+	deliveredBefore := metrics.Sample("onderzeeer_files_total", map[string]string{"result": "delivered"})
+	succeededBefore := metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": "succeeded"})
+	commandsBefore := metrics.Sample("onderzeeer_commands_total", map[string]string{"executor": "command", "result": "succeeded"})
+	activeBefore := metrics.Sample("onderzeeer_jobs_active", nil)
+	pendingBefore := metrics.Sample("onderzeeer_files_pending", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -166,6 +174,27 @@ func TestRunProcessesExistingFileAndStops(t *testing.T) {
 	}
 	if len(commands) != 1 || commands[0].Status != queue.CommandSucceeded {
 		t.Fatalf("persisted commands = %+v", commands)
+	}
+	if metrics.Sample("onderzeeer_jobs_enqueued_total", map[string]string{"result": "created"}) < createdBefore+1 {
+		t.Fatal("enqueue was not counted")
+	}
+	if metrics.Sample("onderzeeer_files_total", map[string]string{"result": "delivered"}) < deliveredBefore+1 {
+		t.Fatal("delivered file was not counted")
+	}
+	if metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": "succeeded"}) < succeededBefore+1 {
+		t.Fatal("succeeded job was not counted")
+	}
+	if metrics.Sample("onderzeeer_commands_total", map[string]string{"executor": "command", "result": "succeeded"}) < commandsBefore+1 {
+		t.Fatal("succeeded command was not counted")
+	}
+	if metrics.Sample("onderzeeer_jobs_active", nil) != activeBefore {
+		t.Fatal("active jobs gauge did not return to its previous value")
+	}
+	if metrics.Sample("onderzeeer_files_pending", nil) != pendingBefore {
+		t.Fatal("pending files gauge did not return to its previous value")
+	}
+	if metrics.Sample("onderzeeer_jobs_total", map[string]string{"outcome": input}) != 0 {
+		t.Fatal("file path was used as a metric label")
 	}
 }
 

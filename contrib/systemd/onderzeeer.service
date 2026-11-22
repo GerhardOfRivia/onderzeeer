@@ -17,6 +17,8 @@ Group=onderzeeer
 # Environment=ONDERZEEER_WEB_LISTEN=127.0.0.1:8080
 # Optional public viewing; start/stop still requires a token.
 # Environment=ONDERZEEER_WEB_PUBLIC_READ=true
+# Optional Prometheus /metrics listener. Disabled when unset.
+# Environment=ONDERZEEER_METRICS_LISTEN=127.0.0.1:9090
 # EnvironmentFile=-/etc/default/onderzeeer
 Environment=ONDERZEEER_STATE_DIR=/var/lib/onderzeeer
 

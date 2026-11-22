@@ -20,6 +20,7 @@ import (
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/daemon"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
 )
 
@@ -973,6 +974,12 @@ func (manager *Manager) Shutdown(ctx context.Context) error {
 }
 
 func (manager *Manager) run(runtime *runtimeInstance) {
+	started := time.Now()
+	outcome := "failed"
+	metrics.InstanceStarted()
+	defer func() {
+		metrics.InstanceFinished(outcome, time.Since(started))
+	}()
 	runtime.logger.Info("instance running")
 	err := manager.invokeRunner(runtime)
 
@@ -985,9 +992,11 @@ func (manager *Manager) run(runtime *runtimeInstance) {
 	if err != nil && !(stopping && cancellationFrom(err, contextErr)) {
 		view.State = StateFailed
 		view.Error = boundedError(err.Error())
+		outcome = "failed"
 	} else {
 		view.State = StateExited
 		view.Error = ""
+		outcome = "exited"
 	}
 	finishedAt := manager.now()
 	view.FinishedAt = &finishedAt

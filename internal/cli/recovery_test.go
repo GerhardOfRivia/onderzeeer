@@ -26,14 +26,19 @@ type testDaemonProcess struct {
 
 func launchTestDaemon(t *testing.T, root, socket string, options ...string) *testDaemonProcess {
 	t.Helper()
+	args := []string{"--socket", socket, "--state-dir", filepath.Join(root, "state"), "--web-listen", "", "--metrics-listen", ""}
+	args = append(args, options...)
+	return launchTestDaemonArgs(t, socket, args...)
+}
+
+func launchTestDaemonArgs(t *testing.T, socket string, daemonArgs ...string) *testDaemonProcess {
+	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	process := &testDaemonProcess{done: make(chan error, 1)}
-	args := []string{"-test.run=^TestDaemonHelperProcess$", "--", "--socket", socket,
-		"--state-dir", filepath.Join(root, "state"), "--web-listen", ""}
-	args = append(args, options...)
+	args := append([]string{"-test.run=^TestDaemonHelperProcess$", "--"}, daemonArgs...)
 	process.command = exec.Command(executable, args...)
 	process.command.Env = append(os.Environ(), "ONDERZEEER_DAEMON_HELPER=1")
 	process.command.Stdout, process.command.Stderr = &process.logs, &process.logs

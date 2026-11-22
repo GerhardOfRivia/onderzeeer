@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/control"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -319,7 +320,83 @@ func newHandlerForListener(manager *control.Manager, logger *slog.Logger, token,
 		_, _ = output.Write(index)
 	})
 
-	return securityHeaders(validateHost(requireAPIAuth(token, mux, publicReads), allowRemoteIPHosts)), nil
+	return instrumentHTTP(securityHeaders(validateHost(requireAPIAuth(token, mux, publicReads), allowRemoteIPHosts))), nil
+}
+
+func instrumentHTTP(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(output http.ResponseWriter, request *http.Request) {
+		started := time.Now()
+		recorder := &statusRecorder{ResponseWriter: output, status: http.StatusOK}
+		next.ServeHTTP(recorder, request)
+		metrics.ObserveHTTP(request.Method, classifyRoute(request), recorder.status, time.Since(started))
+	})
+}
+
+// classifyRoute keeps the dashboard series on the fixed API patterns and a few
+// page classes. Raw paths, including asset filenames, are not labels.
+func classifyRoute(request *http.Request) string {
+	if path, ok := patternPath(request.Pattern); ok {
+		switch {
+		case path == "/openapi.json" || path == "/docs" || strings.HasPrefix(path, "/docs/"):
+			return "docs"
+		case strings.HasPrefix(path, "/api/"):
+			return path
+		}
+	}
+	return classifyPath(request.URL.Path)
+}
+
+func patternPath(pattern string) (string, bool) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return "", false
+	}
+	if _, path, ok := strings.Cut(pattern, " "); ok {
+		if path == "" {
+			return "", false
+		}
+		return path, true
+	}
+	return pattern, true
+}
+
+func classifyPath(requestPath string) string {
+	switch {
+	case requestPath == "/openapi.json" || requestPath == "/docs" || strings.HasPrefix(requestPath, "/docs/"):
+		return "docs"
+	case strings.HasPrefix(requestPath, "/assets/"):
+		return "asset"
+	case requestPath == "/api" || strings.HasPrefix(requestPath, "/api/"):
+		return "unmatched"
+	default:
+		return "page"
+	}
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+}
+
+func (recorder *statusRecorder) WriteHeader(status int) {
+	if !recorder.wrote {
+		recorder.status = status
+		recorder.wrote = true
+	}
+	recorder.ResponseWriter.WriteHeader(status)
+}
+
+func (recorder *statusRecorder) Write(data []byte) (int, error) {
+	if !recorder.wrote {
+		recorder.status = http.StatusOK
+		recorder.wrote = true
+	}
+	return recorder.ResponseWriter.Write(data)
+}
+
+func (recorder *statusRecorder) Unwrap() http.ResponseWriter {
+	return recorder.ResponseWriter
 }
 
 type authenticatedContextKey struct{}
@@ -334,7 +411,11 @@ func requireAPIAuth(token string, next *http.ServeMux, publicReads map[string]bo
 			// Use the mux's matched method/path pattern, so only explicitly
 			// registered reads (including HEAD) can bypass authentication.
 			// A supplied but invalid token must never silently become anonymous.
+			// Publish the pattern on the request as well: a rejected call returns
+			// before ServeMux can record it, and the metrics middleware classifies
+			// the route from that field.
 			_, pattern := next.Handler(request)
+			request.Pattern = pattern
 			anonymousRead := len(headers) == 0 && publicReads[pattern]
 			if !authenticated && !anonymousRead {
 				output.Header().Set("WWW-Authenticate", `Bearer realm="onderzeeer-web"`)

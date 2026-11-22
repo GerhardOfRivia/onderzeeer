@@ -11,6 +11,7 @@ import (
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/executor"
+	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
 	"github.com/GerhardOfRivia/onderzeeer/internal/watcher"
@@ -73,6 +74,7 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 		return err
 	}
 	if recovered > 0 {
+		metrics.AddRecovered(recovered)
 		logger.Warn("recovered interrupted jobs", "jobs", recovered)
 	}
 
@@ -91,8 +93,10 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 			return err
 		}
 		if created {
+			metrics.JobEnqueued("created")
 			logger.Info("enqueued file", "job_id", job.ID, "watch", watch.Name, "file", file.Path)
 		} else {
+			metrics.JobEnqueued("duplicate")
 			logger.Debug("file already queued", "job_id", job.ID, "watch", watch.Name, "file", file.Path)
 		}
 		return nil
