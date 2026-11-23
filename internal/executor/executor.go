@@ -41,9 +41,13 @@ type Command struct {
 }
 
 // TemplateData contains the per-job values available to command templates.
+// Manifest and Files are set for a marker watch. Files is a JSON array.
 type TemplateData struct {
-	File  string
-	JobID int64
+	File       string
+	JobID      int64
+	ExternalID string
+	Manifest   string
+	Files      string
 }
 
 // Expander applies one job's template data to configuration values. Keeping a
@@ -58,8 +62,12 @@ func NewExpander(data TemplateData) Expander {
 	ext := filepath.Ext(data.File)
 	base := filepath.Base(data.File)
 	stem := strings.TrimSuffix(base, ext)
+	// Longer names come first so {{files}} is not consumed by {{file}}.
 	return Expander{replacer: strings.NewReplacer(
+		"{{files}}", data.Files,
 		"{{file}}", data.File,
+		"{{manifest}}", data.Manifest,
+		"{{external_id}}", data.ExternalID,
 		"{{dir}}", filepath.Dir(data.File),
 		"{{basename}}", base,
 		"{{stem}}", stem,

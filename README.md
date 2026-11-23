@@ -753,6 +753,41 @@ use `**` for zero or more directories. Excludes take precedence. With
 `reprocess_on_change: false`, a watch/path pair is processed once; when true, a
 new size/modification-time fingerprint creates another persistent job.
 
+`trigger` defaults to `file`, which makes each matched file a job. `trigger: marker`
+instead waits for one completion file. `marker` is the glob for that file, for
+example `_SUCCESS`, `.eot`, or `*.bezorg-done.json`. `include` cannot be combined
+with a marker watch; `exclude` still applies, and `*.bezorg-partial` never starts
+a job. `marker_format: empty` (the default) treats the marker as an empty signal
+and stores no external id unless a file external-id hook sets one.
+`marker_format: bezorg` reads a version 1 JSON manifest, stores its `external_id`
+on the one job for that manifest, and checks every listed file. Paths in `files`
+are relative to the manifest's directory. `marker_verify` is `exists` (the
+default), `size`, or `sha256`. A second manifest that reuses a non-empty
+`external_id` does not create another job.
+
+The job's `{{file}}` is the marker path. Marker jobs also provide `{{manifest}}`,
+`{{files}}` (a JSON array of absolute paths, sizes, and digests, or `[]` for an
+empty marker), and `{{external_id}}`. The same values are placed in
+`ONDERZEEER_MANIFEST`, `ONDERZEEER_FILES`, and `ONDERZEEER_EXTERNAL_ID` when the
+pipeline does not set those names itself.
+
+```yaml
+watches:
+  - name: incoming
+    path: /data/incoming
+    trigger: marker
+    marker: "*.bezorg-done.json"
+    marker_format: bezorg
+    marker_verify: sha256
+    settle_for: 1s
+    pipeline:
+      - name: process
+        program: /opt/workflows/process
+        args: ["{{manifest}}"]
+        env:
+          ONDERZEEER_EXTERNAL_ID: "{{external_id}}"
+```
+
 Top-level `values` define reusable, config-local strings, as in `shared_dir`
 above. Keys are case-sensitive identifiers (letters, digits, and underscores,
 starting with a letter or underscore). Values can reference one another;
@@ -769,7 +804,10 @@ values. Shell source accepts only config-local `values`:
 
 | Template | Value |
 | --- | --- |
-| `{{file}}` | Absolute file path |
+| `{{file}}` | Absolute file path. For a marker watch this is the completion file. |
+| `{{manifest}}` | Marker path, or empty for an ordinary file job |
+| `{{files}}` | JSON file list for a marker job, or empty for an ordinary file job |
+| `{{external_id}}` | External id stored on the job, or empty |
 | `{{dir}}` | Parent directory |
 | `{{basename}}` | Filename with extension |
 | `{{stem}}` | Filename without its final extension |

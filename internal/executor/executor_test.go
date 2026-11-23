@@ -17,9 +17,11 @@ import (
 func TestExpanderString(t *testing.T) {
 	t.Parallel()
 	file := filepath.Join(string(filepath.Separator), "tmp", "a directory", "report.final.csv")
-	expander := NewExpander(TemplateData{File: file, JobID: 42})
+	expander := NewExpander(TemplateData{File: file, JobID: 42, ExternalID: "batch-7", Manifest: file, Files: `[{"path":"/data/a.csv"}]`})
 	for _, test := range []struct{ input, want string }{
 		{"{{file}}", file},
+		{"{{files}}", `[{"path":"/data/a.csv"}]`},
+		{"{{manifest}} {{external_id}}", file + " batch-7"},
 		{"{{dir}}", filepath.Dir(file)},
 		{"{{basename}}", "report.final.csv"},
 		{"{{stem}}", "report.final"},

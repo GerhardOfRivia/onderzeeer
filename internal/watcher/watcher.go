@@ -32,6 +32,10 @@ const (
 
 var errQueuedDirectoryChanged = errors.New("queued directory changed before scan")
 
+// ErrSkipDelivery means the handler rejected this file without stopping the
+// watcher and without recording it as delivered. A later change can retry it.
+var ErrSkipDelivery = errors.New("watcher: skip delivery")
+
 // Handler receives a stable file selected by a watch configuration.
 type Handler func(context.Context, config.WatchConfig, File) error
 
@@ -854,6 +858,11 @@ func (w *Watcher) settle(ctx context.Context, key string, pending *pendingFile) 
 
 		if err := w.handler(ctx, spec.config, file); err != nil {
 			w.removePending(key, pending)
+			if errors.Is(err, ErrSkipDelivery) {
+				// The file is not remembered as delivered, so a later change
+				// can be tried again. The daemon keeps running.
+				return
+			}
 			w.reportError(fmt.Errorf("handle %s for watch %q: %w", pending.path, spec.config.Name, err))
 			return
 		}

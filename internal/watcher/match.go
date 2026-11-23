@@ -36,6 +36,14 @@ func Match(watch config.WatchConfig, filename string) bool {
 			return false
 		}
 	}
+	if watch.TriggersOnMarker() {
+		// Partials are the in-progress name bezorg uses. A marker watch must
+		// not turn one into a job even if the marker glob is broad.
+		if globMatch("*.bezorg-partial", relative) {
+			return false
+		}
+		return watch.Marker != "" && globMatch(watch.Marker, relative)
+	}
 	if len(watch.Include) == 0 {
 		return true
 	}

@@ -1637,7 +1637,7 @@
           "external_id": {
             "type": "string",
             "maxLength": 256,
-            "description": "Optional caller-defined identifier. Omitted when empty. File-drop jobs leave it empty unless the process installs a file external-id hook. At most 256 UTF-8 bytes."
+            "description": "Optional caller-defined identifier. Omitted when empty. File-drop jobs leave it empty unless a file external-id hook or a bezorg completion manifest sets it. At most 256 UTF-8 bytes."
           },
           "created_at": {
             "type": "string",
