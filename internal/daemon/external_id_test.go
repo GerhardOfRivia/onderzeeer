@@ -48,33 +48,46 @@ func TestFileExternalIDHookIsStoredOnEnqueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
-	defer func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("daemon did not stop")
-		}
-	}()
 
-	deadline := time.Now().Add(5 * time.Second)
+	// Read only. A writable Open races the daemon for the new database and, on
+	// a busy CI runner, makes the daemon's own Open fail with SQLITE_BUSY
+	// before it can enqueue the file.
+	deadline := time.Now().Add(10 * time.Second)
+	var jobs []queue.Job
 	for {
-		store, err := queue.Open(database)
-		if err != nil {
-			t.Fatal(err)
+		select {
+		case err := <-done:
+			cancel()
+			t.Fatalf("daemon exited before the file was queued: %v", err)
+		default:
 		}
-		jobs, err := store.ListJobs(context.Background(), queue.JobFilter{ExternalID: "drop-batch.csv"})
-		closeErr := store.Close()
-		if err != nil || closeErr != nil {
-			t.Fatal(errors.Join(err, closeErr))
-		}
-		if len(jobs) == 1 && jobs[0].ExternalID == "drop-batch.csv" && jobs[0].Path == input {
-			return
+		store, err := queue.OpenReadOnly(database)
+		if err == nil {
+			jobs, err = store.ListJobs(context.Background(), queue.JobFilter{ExternalID: "drop-batch.csv"})
+			closeErr := store.Close()
+			if err == nil && closeErr == nil && len(jobs) == 1 && jobs[0].ExternalID == "drop-batch.csv" && jobs[0].Path == input {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil && !errors.Is(err, context.Canceled) {
+						t.Fatalf("daemon: %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("daemon did not stop")
+				}
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("hook id was not stored: %+v", jobs)
+			cancel()
+			var runErr error
+			select {
+			case runErr = <-done:
+			case <-time.After(time.Second):
+			}
+			t.Fatalf("hook id was not stored: %+v; daemon: %v", jobs, runErr)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
