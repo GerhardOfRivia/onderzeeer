@@ -556,11 +556,7 @@ func validateMutation(output http.ResponseWriter, request *http.Request) error {
 	return decodeMutation(output, request, &struct{}{}, maxMutationBody)
 }
 
-func decodeMutation(output http.ResponseWriter, request *http.Request, body any, limit int64) error {
-	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		return errors.New("Content-Type must be application/json")
-	}
+func validateControlHeaders(request *http.Request) error {
 	if request.Header.Get("X-onderzeeer-Web") != "1" {
 		return errors.New("X-onderzeeer-Web header is required")
 	}
@@ -572,6 +568,17 @@ func decodeMutation(output http.ResponseWriter, request *http.Request, body any,
 		if parseErr != nil || parsed.Scheme != "http" || !strings.EqualFold(parsed.Host, request.Host) {
 			return errors.New("request origin does not match the onderzeeer web origin")
 		}
+	}
+	return nil
+}
+
+func decodeMutation(output http.ResponseWriter, request *http.Request, body any, limit int64) error {
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return errors.New("Content-Type must be application/json")
+	}
+	if err := validateControlHeaders(request); err != nil {
+		return err
 	}
 
 	request.Body = http.MaxBytesReader(output, request.Body, limit)

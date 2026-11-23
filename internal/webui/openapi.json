@@ -29,6 +29,10 @@
       "description": "Durable job lifecycle events for Server-Sent Events and long-poll."
     },
     {
+      "name": "Webhooks",
+      "description": "Per-queue HMAC webhook subscriptions and durable deliveries."
+    },
+    {
       "name": "Instances",
       "description": "Managed instance lifecycle."
     },
@@ -332,6 +336,87 @@
             "schema": {
               "type": "string"
             }
+          }
+        ]
+      }
+    },
+    "/api/v1/queues/{queueID}/webhooks": {
+      "get": {
+        "operationId": "listWebhooks",
+        "tags": ["Webhooks"],
+        "summary": "List queue webhooks",
+        "description": "Returns webhook URLs, event filters, and retry budgets. The signing secret is never included. An empty events array subscribes to every event type.",
+        "responses": {
+          "200": {"description": "Webhook subscriptions.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Webhooks"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "404": {"$ref": "#/components/responses/QueueNotFound"},
+          "409": {"$ref": "#/components/responses/QueueUninitialized"},
+          "503": {"$ref": "#/components/responses/QueueUnavailable"}
+        },
+        "parameters": [{"$ref": "#/components/parameters/QueueID"}]
+      },
+      "post": {
+        "operationId": "createWebhook",
+        "tags": ["Webhooks"],
+        "summary": "Create a queue webhook",
+        "description": "Stores a subscription and signs later deliveries with secret. The response does not echo the secret. Requires the bearer token, Content-Type application/json, and X-onderzeeer-Web: 1. At most 20 webhooks per queue. An empty events list matches every event. max_attempts defaults to 8.",
+        "responses": {
+          "201": {"description": "Webhook created.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Webhook"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "404": {"$ref": "#/components/responses/QueueNotFound"},
+          "409": {"description": "Queue is missing or the webhook limit was reached.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "503": {"$ref": "#/components/responses/QueueUnavailable"}
+        },
+        "parameters": [{"$ref": "#/components/parameters/QueueID"}],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WebhookCreate"}}}
+        }
+      }
+    },
+    "/api/v1/queues/{queueID}/webhooks/{webhookID}": {
+      "delete": {
+        "operationId": "deleteWebhook",
+        "tags": ["Webhooks"],
+        "summary": "Delete a queue webhook",
+        "description": "Deletes the subscription and its delivery history. Requires the bearer token and X-onderzeeer-Web: 1. No request body is required.",
+        "responses": {
+          "200": {"description": "Webhook deleted.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeletedWebhook"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "404": {"description": "Queue or webhook not found.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"$ref": "#/components/responses/QueueUninitialized"},
+          "503": {"$ref": "#/components/responses/QueueUnavailable"}
+        },
+        "parameters": [
+          {"$ref": "#/components/parameters/QueueID"},
+          {"$ref": "#/components/parameters/WebhookID"}
+        ]
+      }
+    },
+    "/api/v1/queues/{queueID}/webhooks/{webhookID}/deliveries": {
+      "get": {
+        "operationId": "listWebhookDeliveries",
+        "tags": ["Webhooks"],
+        "summary": "List webhook deliveries",
+        "description": "Oldest deliveries first, at most 100. status filters pending, succeeded, or dead. payload is the JSON body that was or will be posted. The signing secret is not included.",
+        "responses": {
+          "200": {"description": "Delivery attempts.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WebhookDeliveries"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "404": {"description": "Queue or webhook not found.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"$ref": "#/components/responses/QueueUninitialized"},
+          "503": {"$ref": "#/components/responses/QueueUnavailable"}
+        },
+        "parameters": [
+          {"$ref": "#/components/parameters/QueueID"},
+          {"$ref": "#/components/parameters/WebhookID"},
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "string", "enum": ["pending", "succeeded", "dead"]}
           }
         ]
       }
@@ -776,6 +861,17 @@
         "in": "path",
         "required": true,
         "description": "Job ID from the queue job list.",
+        "schema": {
+          "type": "integer",
+          "format": "int64",
+          "minimum": 1
+        }
+      },
+      "WebhookID": {
+        "name": "webhookID",
+        "in": "path",
+        "required": true,
+        "description": "Webhook ID from the webhook list.",
         "schema": {
           "type": "integer",
           "format": "int64",
@@ -1262,6 +1358,99 @@
             "started_at": "2026-09-26T12:00:00Z"
           }
         }
+      },
+      "Webhook": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "url", "events", "max_attempts", "created_at"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "url": {"type": "string"},
+          "events": {"type": "array", "items": {"type": "string"}, "description": "Empty subscribes to every event type."},
+          "max_attempts": {"type": "integer", "minimum": 1, "maximum": 20},
+          "created_at": {"type": "string", "format": "date-time"}
+        },
+        "example": {
+          "id": 1,
+          "url": "https://agent.example/hooks/onderzeeer",
+          "events": ["job.succeeded", "job.failed"],
+          "max_attempts": 8,
+          "created_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "WebhookCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "secret"],
+        "properties": {
+          "url": {"type": "string", "maxLength": 2048},
+          "secret": {"type": "string", "minLength": 16, "maxLength": 256, "description": "Stored for HMAC signing and never returned."},
+          "events": {"type": "array", "items": {"type": "string", "enum": ["job.enqueued", "job.started", "job.succeeded", "job.failed", "job.retried", "job.interrupted"]}},
+          "max_attempts": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8}
+        },
+        "example": {
+          "url": "https://agent.example/hooks/onderzeeer",
+          "secret": "replace-with-a-random-secret",
+          "events": ["job.succeeded"],
+          "max_attempts": 8
+        }
+      },
+      "Webhooks": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["webhooks"],
+        "properties": {
+          "webhooks": {"type": "array", "items": {"$ref": "#/components/schemas/Webhook"}}
+        },
+        "example": {"webhooks": []}
+      },
+      "DeletedWebhook": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {"id": {"type": "integer", "minimum": 1}},
+        "example": {"id": 1}
+      },
+      "WebhookDelivery": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "webhook_id", "event_seq", "delivery_id", "event_type", "payload", "status", "attempts", "next_attempt_at", "created_at", "updated_at"],
+        "properties": {
+          "id": {"type": "integer", "minimum": 1},
+          "webhook_id": {"type": "integer", "minimum": 1},
+          "event_seq": {"type": "integer", "minimum": 1},
+          "delivery_id": {"type": "string"},
+          "event_type": {"type": "string"},
+          "payload": {"type": "string"},
+          "status": {"type": "string", "enum": ["pending", "succeeded", "dead"]},
+          "attempts": {"type": "integer", "minimum": 0},
+          "next_attempt_at": {"type": "string", "format": "date-time"},
+          "last_error": {"type": "string"},
+          "created_at": {"type": "string", "format": "date-time"},
+          "updated_at": {"type": "string", "format": "date-time"}
+        },
+        "example": {
+          "id": 1,
+          "webhook_id": 1,
+          "event_seq": 4,
+          "delivery_id": "4f2a91c0-b7e3-40d1-8a11-6c0e5b9a1234",
+          "event_type": "job.succeeded",
+          "payload": "{\"seq\":4,\"type\":\"job.succeeded\"}",
+          "status": "pending",
+          "attempts": 0,
+          "next_attempt_at": "2026-09-26T12:00:00Z",
+          "created_at": "2026-09-26T12:00:00Z",
+          "updated_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "WebhookDeliveries": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["deliveries"],
+        "properties": {
+          "deliveries": {"type": "array", "items": {"$ref": "#/components/schemas/WebhookDelivery"}}
+        },
+        "example": {"deliveries": []}
       },
       "Event": {
         "type": "object",

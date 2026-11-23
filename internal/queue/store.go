@@ -118,7 +118,13 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqliteFileURI(path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("queue: resolve database path: %w", err)
+	}
+	// busy_timeout is in the DSN so the first connection, including Ping, waits
+	// instead of failing when the daemon or the API already holds a transaction.
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, databaseOpenError(path, err)
 	}
@@ -162,6 +168,10 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
 	}
 	if err := migrateEvents(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
+	}
+	if err := migrateWebhooks(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
 	}
@@ -274,6 +284,10 @@ func OpenReadOnlyContext(ctx context.Context, path string) (*Store, error) {
 }
 
 func readOnlyDSN(path string) (string, error) {
+	return sqliteFileURI(path, url.Values{"mode": {"ro"}})
+}
+
+func sqliteFileURI(path string, query url.Values) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -284,10 +298,11 @@ func readOnlyDSN(path string) (string, error) {
 		// have the required leading slash.
 		uriPath = "/" + uriPath
 	}
-	uri := url.URL{Scheme: "file", Path: uriPath}
-	query := uri.Query()
-	query.Set("mode", "ro")
-	uri.RawQuery = query.Encode()
+	if query == nil {
+		query = url.Values{}
+	}
+	query.Add("_pragma", "busy_timeout(5000)")
+	uri := url.URL{Scheme: "file", Path: uriPath, RawQuery: query.Encode()}
 	return uri.String(), nil
 }
 
