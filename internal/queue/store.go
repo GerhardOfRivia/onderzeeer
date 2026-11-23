@@ -161,6 +161,10 @@ func Open(path string, opts ...Option) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
 	}
+	if err := migrateEvents(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
+	}
 
 	return s, nil
 }

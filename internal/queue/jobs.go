@@ -75,7 +75,12 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (Job, bool, error)
 	if availableAt.IsZero() {
 		availableAt = now
 	}
-	row := s.db.QueryRowContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Job{}, false, fmt.Errorf("queue: begin enqueue: %w", err)
+	}
+	defer rollback(tx)
+	row := tx.QueryRowContext(ctx, `
 INSERT INTO jobs (
     watch_name, path, fingerprint, status, attempts, max_retries,
     available_at, created_at, updated_at, external_id
@@ -94,13 +99,19 @@ RETURNING `+jobColumns,
 	)
 	job, err := scanJob(row)
 	if err == nil {
+		if err := s.insertEvent(ctx, tx, now, EventJobEnqueued, job); err != nil {
+			return Job{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return Job{}, false, fmt.Errorf("queue: commit enqueue: %w", err)
+		}
 		return job, true, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Job{}, false, fmt.Errorf("queue: enqueue job: %w", err)
 	}
 
-	job, err = scanJob(s.db.QueryRowContext(ctx, `
+	job, err = scanJob(tx.QueryRowContext(ctx, `
 SELECT `+jobColumns+`
 FROM jobs
 WHERE watch_name = ? AND path = ? AND fingerprint = ?`,
@@ -110,6 +121,9 @@ WHERE watch_name = ? AND path = ? AND fingerprint = ?`,
 	))
 	if err != nil {
 		return Job{}, false, fmt.Errorf("queue: find duplicate job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Job{}, false, fmt.Errorf("queue: commit duplicate enqueue: %w", err)
 	}
 	return job, false, nil
 }
@@ -161,6 +175,9 @@ VALUES (?, ?, ?, ?)`, job.ID, job.Attempts, StatusRunning, unixNano(now))
 	runID, err := result.LastInsertId()
 	if err != nil {
 		return nil, fmt.Errorf("queue: get run id: %w", err)
+	}
+	if err := s.recordJobEvent(ctx, tx, now, EventJobStarted, job.ID); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -243,6 +260,9 @@ WHERE id = ? AND status = ?`,
 	}
 	if err := requireOneRow(result); err != nil {
 		return fmt.Errorf("queue: complete job: %w", err)
+	}
+	if err := s.recordJobEvent(ctx, tx, now, EventJobSucceeded, jobID); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("queue: commit success: %w", err)
@@ -332,6 +352,13 @@ WHERE id = ? AND status IN (?, ?)`,
 	if err := requireOneRow(result); err != nil {
 		return "", fmt.Errorf("queue: fail job: %w", err)
 	}
+	eventType := EventJobFailed
+	if resultingStatus == StatusQueued {
+		eventType = EventJobRetried
+	}
+	if err := s.recordJobEvent(ctx, tx, now, eventType, jobID); err != nil {
+		return "", err
+	}
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("queue: commit failure: %w", err)
 	}
@@ -369,6 +396,9 @@ WHERE id = ? AND status = ?`, StatusQueued, now, reason, now, jobID, StatusPendi
 	if err := requireOneRow(result); err != nil {
 		return fmt.Errorf("queue: requeue interrupted resource wait: %w", err)
 	}
+	if err := s.recordJobEvent(ctx, tx, s.timestamp(), EventJobInterrupted, jobID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -401,6 +431,25 @@ SET status = ?, error = ?, finished_at = ?
 WHERE status IN (?, ?)`, StatusFailed, reason, unixNano(now), StatusRunning, StatusPending); err != nil {
 		return 0, fmt.Errorf("queue: recover runs: %w", err)
 	}
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM jobs WHERE status IN (?, ?)`, StatusRunning, StatusPending)
+	if err != nil {
+		return 0, fmt.Errorf("queue: list recoverable jobs: %w", err)
+	}
+	var recoveredIDs []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("queue: scan recoverable job: %w", err)
+		}
+		recoveredIDs = append(recoveredIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("queue: list recoverable jobs: %w", err)
+	}
+	rows.Close()
+
 	result, err := tx.ExecContext(ctx, `
 UPDATE jobs
 SET status = ?, available_at = ?, last_error = ?, updated_at = ?, finished_at = NULL
@@ -411,6 +460,11 @@ WHERE status IN (?, ?)`, StatusQueued, unixNano(now), reason, unixNano(now), Sta
 	count, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("queue: count recovered jobs: %w", err)
+	}
+	for _, id := range recoveredIDs {
+		if err := s.recordJobEvent(ctx, tx, now, EventJobInterrupted, id); err != nil {
+			return 0, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("queue: commit recovery: %w", err)

@@ -32,6 +32,7 @@ var httpRoutes = map[string]struct{}{
 	"/api/v1/queues":                        {},
 	"/api/v1/queues/{queueID}/jobs":         {},
 	"/api/v1/queues/{queueID}/jobs/{jobID}": {},
+	"/api/v1/queues/{queueID}/events":       {},
 	"/api/v1/queues/{queueID}/commands/{commandID}/output": {},
 	"/api/v1/instances":                   {},
 	"/api/v1/queues/{queueID}/start":      {},

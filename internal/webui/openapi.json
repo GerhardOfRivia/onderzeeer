@@ -25,6 +25,10 @@
       "description": "Job history and captured output."
     },
     {
+      "name": "Events",
+      "description": "Durable job lifecycle events for Server-Sent Events and long-poll."
+    },
+    {
       "name": "Instances",
       "description": "Managed instance lifecycle."
     },
@@ -234,6 +238,99 @@
               "default": 0,
               "minimum": 0,
               "maximum": 2147483647
+            }
+          }
+        ]
+      }
+    },
+    "/api/v1/queues/{queueID}/events": {
+      "get": {
+        "operationId": "listEvents",
+        "tags": [
+          "Events"
+        ],
+        "summary": "Follow durable job events",
+        "description": "Returns queue events with seq greater than the cursor. The sequence is monotonic per queue database, stored in SQLite, and not reused after retention deletes older rows, so after and Last-Event-ID survive process restarts.\n\nMode selection: stream=sse or stream=poll wins. When stream is omitted, Accept: text/event-stream selects Server-Sent Events; any other Accept, including */* and application/json, selects a JSON long-poll. Last-Event-ID overrides after when both are present. The SSE id field is the event seq.\n\nThe long-poll waits up to timeout seconds (default 25, maximum 60; 0 returns immediately) and responds 200 with the events that arrived, or an empty list. SSE uses the same timeout as the stream lifetime, sends id/event/data frames, and emits a keepalive comment about every 15 seconds. At most 100 events are returned per poll; pass next back as after to continue. A cursor older than retained history skips the gap and resumes at the next stored seq.\n\nThe newest 10000 events are kept. Older events are deleted during queue maintenance and, on a coarse cadence, when new events are written. Reads follow the same authentication rules as other GET routes, including ONDERZEEER_WEB_PUBLIC_READ.",
+        "responses": {
+          "200": {
+            "description": "Job events after the requested cursor.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Events"
+                }
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE frames. id is seq, event is the event type, and data is one Event object encoded as a single JSON line."
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "400": {
+            "$ref": "#/components/responses/InvalidRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/QueueNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/QueueUninitialized"
+          },
+          "503": {
+            "$ref": "#/components/responses/QueueUnavailable"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/QueueID"
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Return events with seq greater than this cursor. Ignored when Last-Event-ID is set.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "timeout",
+            "in": "query",
+            "required": false,
+            "description": "Seconds to wait. 0 returns immediately. The maximum is 60. SSE holds the stream for this long; long-poll returns when an event arrives or the timeout elapses.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 60,
+              "default": 25
+            }
+          },
+          {
+            "name": "stream",
+            "in": "query",
+            "required": false,
+            "description": "sse selects text/event-stream. poll selects the JSON long-poll. When omitted, Accept selects the mode.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "sse",
+                "poll"
+              ]
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "SSE resume cursor. Overrides after. Use the seq of the last event the client processed.",
+            "schema": {
+              "type": "string"
             }
           }
         ]
@@ -1164,6 +1261,133 @@
             "created_at": "2026-09-26T12:00:00Z",
             "started_at": "2026-09-26T12:00:00Z"
           }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "seq",
+          "type",
+          "queue_id",
+          "job_id",
+          "path",
+          "status",
+          "attempts",
+          "created_at",
+          "job_created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "job.enqueued",
+              "job.started",
+              "job.succeeded",
+              "job.failed",
+              "job.retried",
+              "job.interrupted"
+            ]
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "PENDING",
+              "RUNNING",
+              "SUCCEEDED",
+              "FAILED"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "external_id": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When this event was recorded."
+          },
+          "job_created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "example": {
+          "seq": 1,
+          "type": "job.enqueued",
+          "queue_id": "abc123",
+          "job_id": 1,
+          "path": "/data/incoming/report.txt",
+          "status": "QUEUED",
+          "attempts": 0,
+          "external_id": "batch-42",
+          "created_at": "2026-09-26T12:00:00Z",
+          "job_created_at": "2026-09-26T12:00:00Z",
+          "updated_at": "2026-09-26T12:00:00Z"
+        }
+      },
+      "Events": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "events",
+          "after",
+          "next"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Cursor applied to this response. Last-Event-ID wins over the after query."
+          },
+          "next": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Pass this value as after to read events that follow this page. Equal to after when the page is empty."
+          }
+        },
+        "example": {
+          "events": [],
+          "after": 0,
+          "next": 0
         }
       },
       "Job": {

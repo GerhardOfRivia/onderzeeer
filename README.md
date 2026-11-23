@@ -403,6 +403,36 @@ job, command, file, resource, and instance series are created at startup, so a
 fresh process reports zeros. A command canceled because the process is shutting
 down is not counted; a command timeout is a failure.
 
+## job events
+
+Each queue database records a monotonic event sequence for job transitions:
+`job.enqueued`, `job.started`, `job.succeeded`, `job.failed`, `job.retried`, and
+`job.interrupted`. The sequence is an SQLite `AUTOINCREMENT` value, so it
+survives restarts and is not reused when old rows are deleted. A duplicate
+file discovery does not emit another `job.enqueued`.
+
+`GET /api/v1/queues/{queueID}/events?after=<seq>` follows that log.
+
+- `stream=poll` returns JSON and long-polls. `stream=sse` returns
+  `text/event-stream`, uses `seq` as the SSE `id`, and honors `Last-Event-ID`
+  (that header overrides `after`). When `stream` is omitted, `Accept:
+  text/event-stream` selects SSE. Any other `Accept`, including curl's `*/*`,
+  selects the JSON long-poll.
+- `timeout` is a whole number of seconds, default 25 and at most 60. `0`
+  returns immediately. The JSON mode waits until an event arrives or the
+  timeout elapses, then returns `{events, after, next}`. Pass `next` as the
+  next `after`. SSE keeps the stream open until `timeout`, with a keepalive
+  comment about every 15 seconds. Each response contains at most 100 events.
+- The payload includes `queue_id`, `job_id`, `path`, `status`, `attempts`,
+  `external_id` when set, `seq`, and the event and job timestamps.
+- The newest 10,000 events are kept. Hourly queue maintenance deletes the
+  surplus. After the log has passed that limit, the write that records every
+  1,000th new event deletes the surplus in the same transaction. A cursor that
+  falls behind the retained window resumes at the next stored sequence; read
+  the jobs API for anything the gap skipped.
+- Reads use the same authentication as other `GET` routes, including
+  `ONDERZEEER_WEB_PUBLIC_READ`.
+
 ## queue and history inspection
 
 Inspect a managed instance by name, ID, or its registered config path:
