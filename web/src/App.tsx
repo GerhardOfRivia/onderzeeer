@@ -1027,6 +1027,7 @@ function JobDrawer({
                 </div>
                 <dl>
                   <Detail label="Watch" value={detail.job.watch_name} />
+                  {detail.job.external_id ? <Detail label="External ID" value={<code>{detail.job.external_id}</code>} /> : null}
                   <Detail label="Attempts" value={`${detail.job.attempts} / ${detail.job.max_retries + 1}`} />
                   <Detail label="Created" value={formatDate(detail.job.created_at)} />
                   <Detail label="Updated" value={formatDate(detail.job.updated_at)} />

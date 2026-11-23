@@ -83,18 +83,23 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 		if !watch.ReprocessOnChange {
 			fingerprint = singleVersionFingerprint
 		}
+		externalID, err := externalIDFor(watch, file)
+		if err != nil {
+			return err
+		}
 		job, created, err := store.Enqueue(ctx, queue.EnqueueParams{
 			WatchName:   watch.Name,
 			Path:        file.Path,
 			Fingerprint: fingerprint,
 			MaxRetries:  cfg.Queue.MaxRetries,
+			ExternalID:  externalID,
 		})
 		if err != nil {
 			return err
 		}
 		if created {
 			metrics.JobEnqueued("created")
-			logger.Info("enqueued file", "job_id", job.ID, "watch", watch.Name, "file", file.Path)
+			logger.Info("enqueued file", "job_id", job.ID, "watch", watch.Name, "file", file.Path, "external_id", job.ExternalID)
 		} else {
 			metrics.JobEnqueued("duplicate")
 			logger.Debug("file already queued", "job_id", job.ID, "watch", watch.Name, "file", file.Path)

@@ -53,19 +53,28 @@ type Job struct {
 	UpdatedAt   time.Time
 	StartedAt   *time.Time
 	FinishedAt  *time.Time
+	// ExternalID is an optional caller-defined identifier. Empty means unset.
+	// File-drop leaves it empty unless a hook supplies one.
+	ExternalID string
 
 	RunID   int64
 	Attempt int
 }
 
+// MaxExternalIDBytes is the maximum stored length of an external id.
+const MaxExternalIDBytes = 256
+
 // EnqueueParams describes a file to insert into the queue. AvailableAt defaults
 // to the current time. The tuple (WatchName, Path, Fingerprint) is idempotent.
+// ExternalID is trimmed and stored only when a new job is inserted; a duplicate
+// discovery does not replace the id already recorded for that file.
 type EnqueueParams struct {
 	WatchName   string
 	Path        string
 	Fingerprint string
 	MaxRetries  int
 	AvailableAt time.Time
+	ExternalID  string
 }
 
 // Run records one claimed execution attempt for a job.
@@ -155,10 +164,12 @@ type JobFilter struct {
 	Status    Status
 	WatchName string
 	// Search matches literal text in file paths, watch names, status, errors,
-	// or the job ID (optionally prefixed with #).
+	// external ids, or the job ID (optionally prefixed with #).
 	Search string
-	Limit  int
-	Offset int
+	// ExternalID, when set, matches that id exactly.
+	ExternalID string
+	Limit      int
+	Offset     int
 }
 
 // QueueCounts is a point-in-time count of jobs by state.

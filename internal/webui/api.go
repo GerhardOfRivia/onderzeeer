@@ -95,6 +95,7 @@ type jobView struct {
 	MaxRetries  int          `json:"max_retries"`
 	AvailableAt time.Time    `json:"available_at"`
 	LastError   string       `json:"last_error,omitempty"`
+	ExternalID  string       `json:"external_id,omitempty"`
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
 	StartedAt   *time.Time   `json:"started_at,omitempty"`
@@ -510,6 +511,11 @@ func jobFilter(values url.Values) (queue.JobFilter, int, int, error) {
 	if len(filter.Search) > 1024 {
 		return filter, 0, 0, errors.New("search filter is too long")
 	}
+	externalID := strings.TrimSpace(values.Get("external_id"))
+	if strings.ContainsRune(externalID, 0) || len(externalID) > queue.MaxExternalIDBytes {
+		return filter, 0, 0, fmt.Errorf("external_id must be at most %d bytes and cannot contain NUL", queue.MaxExternalIDBytes)
+	}
+	filter.ExternalID = externalID
 	limit, err := queryInteger(values, "limit", defaultJobLimit)
 	if err != nil || limit <= 0 || limit > maximumJobLimit {
 		return filter, 0, 0, fmt.Errorf("limit must be between 1 and %d", maximumJobLimit)
@@ -595,7 +601,7 @@ func toJobView(job queue.Job, includeFingerprint bool) jobView {
 	view := jobView{
 		ID: job.ID, WatchName: job.WatchName, Path: job.Path, Status: job.Status,
 		Attempts: job.Attempts, MaxRetries: job.MaxRetries, AvailableAt: job.AvailableAt,
-		LastError: job.LastError, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
+		LastError: job.LastError, ExternalID: job.ExternalID, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
 		StartedAt: job.StartedAt, FinishedAt: job.FinishedAt,
 	}
 	if includeFingerprint {

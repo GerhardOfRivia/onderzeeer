@@ -205,9 +205,10 @@ func statusCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func queueCommand(args []string, stdout, stderr io.Writer) error {
-	flags := newFlagSet("queue", stderr, "onderzeeer queue <config> [--watch name] [--limit n]")
+	flags := newFlagSet("queue", stderr, "onderzeeer queue <config> [--watch name] [--external-id id] [--limit n]")
 	inspection := inspectionFlags(flags)
 	watchName := flags.String("watch", "", "filter by watch name")
+	externalID := flags.String("external-id", "", "filter by exact external id")
 	limit := flags.Int("limit", 100, "maximum jobs to display")
 	if err := parseFlags(flags, args); err != nil {
 		return err
@@ -218,6 +219,9 @@ func queueCommand(args []string, stdout, stderr io.Writer) error {
 	if *limit <= 0 {
 		return usageError{message: "queue --limit must be greater than zero"}
 	}
+	if err := validateExternalIDFlag(*externalID); err != nil {
+		return err
+	}
 
 	stores, err := inspection.open(flags.Arg(0))
 	if err != nil {
@@ -227,15 +231,15 @@ func queueCommand(args []string, stdout, stderr io.Writer) error {
 	ctx := context.Background()
 	jobs := make([]listedJob, 0)
 	for _, source := range stores {
-		queued, err := source.store.ListJobs(ctx, queue.JobFilter{Status: queue.StatusQueued, WatchName: *watchName, Limit: *limit})
+		queued, err := source.store.ListJobs(ctx, queue.JobFilter{Status: queue.StatusQueued, WatchName: *watchName, ExternalID: *externalID, Limit: *limit})
 		if err != nil {
 			return fmt.Errorf("list queue %s: %w", source.path, err)
 		}
-		running, err := source.store.ListJobs(ctx, queue.JobFilter{Status: queue.StatusRunning, WatchName: *watchName, Limit: *limit})
+		running, err := source.store.ListJobs(ctx, queue.JobFilter{Status: queue.StatusRunning, WatchName: *watchName, ExternalID: *externalID, Limit: *limit})
 		if err != nil {
 			return fmt.Errorf("list queue %s: %w", source.path, err)
 		}
-		pending, err := source.store.ListJobs(ctx, queue.JobFilter{Status: queue.StatusPending, WatchName: *watchName, Limit: *limit})
+		pending, err := source.store.ListJobs(ctx, queue.JobFilter{Status: queue.StatusPending, WatchName: *watchName, ExternalID: *externalID, Limit: *limit})
 		if err != nil {
 			return fmt.Errorf("list queue %s: %w", source.path, err)
 		}
@@ -251,10 +255,11 @@ func queueCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func jobsCommand(args []string, stdout, stderr io.Writer) error {
-	flags := newFlagSet("jobs", stderr, "onderzeeer jobs <config> [--status status] [--watch name] [--limit n]")
+	flags := newFlagSet("jobs", stderr, "onderzeeer jobs <config> [--status status] [--watch name] [--external-id id] [--limit n]")
 	inspection := inspectionFlags(flags)
 	statusText := flags.String("status", "", "queued, pending, running, succeeded, or failed")
 	watchName := flags.String("watch", "", "filter by watch name")
+	externalID := flags.String("external-id", "", "filter by exact external id")
 	limit := flags.Int("limit", 100, "maximum jobs to display")
 	if err := parseFlags(flags, args); err != nil {
 		return err
@@ -264,6 +269,9 @@ func jobsCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	if *limit <= 0 {
 		return usageError{message: "jobs --limit must be greater than zero"}
+	}
+	if err := validateExternalIDFlag(*externalID); err != nil {
+		return err
 	}
 	status, err := parseStatus(*statusText)
 	if err != nil {
@@ -279,9 +287,10 @@ func jobsCommand(args []string, stdout, stderr io.Writer) error {
 	jobs := make([]listedJob, 0)
 	for _, source := range stores {
 		found, err := source.store.ListJobs(ctx, queue.JobFilter{
-			Status:    status,
-			WatchName: *watchName,
-			Limit:     *limit,
+			Status:     status,
+			WatchName:  *watchName,
+			ExternalID: *externalID,
+			Limit:      *limit,
 		})
 		if err != nil {
 			return fmt.Errorf("list jobs %s: %w", source.path, err)
@@ -634,6 +643,14 @@ func parseStatus(value string) (queue.Status, error) {
 	}
 }
 
+func validateExternalIDFlag(value string) error {
+	value = strings.TrimSpace(value)
+	if strings.ContainsRune(value, 0) || len(value) > queue.MaxExternalIDBytes {
+		return usageError{message: fmt.Sprintf("external id must be at most %d bytes and cannot contain NUL", queue.MaxExternalIDBytes)}
+	}
+	return nil
+}
+
 func parseLogLevel(value string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "debug":
@@ -677,6 +694,9 @@ func printJobFields(output io.Writer, job *queue.Job) {
 	fmt.Fprintf(w, "Watch:\t%s\n", job.WatchName)
 	fmt.Fprintf(w, "File:\t%s\n", strconv.Quote(job.Path))
 	fmt.Fprintf(w, "Fingerprint:\t%s\n", job.Fingerprint)
+	if job.ExternalID != "" {
+		fmt.Fprintf(w, "External ID:\t%s\n", job.ExternalID)
+	}
 	fmt.Fprintf(w, "Attempts:\t%d/%d\n", job.Attempts, job.MaxRetries+1)
 	fmt.Fprintf(w, "Available:\t%s\n", formatTime(job.AvailableAt))
 	fmt.Fprintf(w, "Created:\t%s\n", formatTime(job.CreatedAt))
@@ -743,8 +763,8 @@ Requires a running onderzeeerd:
   onderzeeer ps [--all] [--socket path]
   onderzeeer stop [--socket path] <id-or-name> [id-or-name ...]
   onderzeeer status <instance-or-config> [--socket path]
-  onderzeeer queue <instance-or-config> [--socket path]
-  onderzeeer jobs <instance-or-config> [--status status] [--watch name] [--socket path]
+	onderzeeer queue <instance-or-config> [--watch name] [--external-id id] [--socket path]
+  onderzeeer jobs <instance-or-config> [--status status] [--watch name] [--external-id id] [--socket path]
   onderzeeer job <instance-or-config> <id> [--rm] [--socket path]
   onderzeeer logs <instance-or-config> <id> [--socket path]
   onderzeeer prune <instance-or-config> --older-than age [--dry-run] [--include-failed]

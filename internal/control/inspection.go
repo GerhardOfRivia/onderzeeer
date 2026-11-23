@@ -96,7 +96,11 @@ func (server *Server) handleQueueRead(output http.ResponseWriter, request *http.
 			writeAPIError(output, http.StatusBadRequest, "invalid_request", errors.New("positive limit and nonnegative offset required"))
 			return
 		}
-		result, err = store.ListJobs(ctx, queue.JobFilter{Status: queue.Status(values.Get("status")), WatchName: values.Get("watch"), Search: values.Get("search"), Limit: limit, Offset: offset})
+		result, err = store.ListJobs(ctx, queue.JobFilter{
+			Status: queue.Status(values.Get("status")), WatchName: values.Get("watch"),
+			Search: values.Get("search"), ExternalID: values.Get("external_id"),
+			Limit: limit, Offset: offset,
+		})
 	case "job", "runs", "commands":
 		id, parseErr := strconv.ParseInt(values.Get("id"), 10, 64)
 		if parseErr != nil || id <= 0 {
@@ -231,7 +235,10 @@ func (reader *QueueReader) Counts(ctx context.Context) (queue.QueueCounts, error
 
 func (reader *QueueReader) ListJobs(ctx context.Context, filter queue.JobFilter) ([]queue.Job, error) {
 	var result []queue.Job
-	values := url.Values{"status": {string(filter.Status)}, "watch": {filter.WatchName}, "search": {filter.Search}, "limit": {strconv.Itoa(filter.Limit)}, "offset": {strconv.Itoa(filter.Offset)}}
+	values := url.Values{
+		"status": {string(filter.Status)}, "watch": {filter.WatchName}, "search": {filter.Search},
+		"external_id": {filter.ExternalID}, "limit": {strconv.Itoa(filter.Limit)}, "offset": {strconv.Itoa(filter.Offset)},
+	}
 	err := reader.read(ctx, "jobs", values, &result)
 	return result, err
 }

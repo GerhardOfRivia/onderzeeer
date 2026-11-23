@@ -14,6 +14,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// jobsSchema is the released jobs table. The pending-state rebuild copies
+// rows with INSERT SELECT *, so new columns belong in migrations.go rather
+// than here.
 const jobsSchema = `
 CREATE TABLE IF NOT EXISTS jobs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +154,10 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("queue: initialize database %q schema: %w", path, err)
 	}
 	if err := migratePendingState(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
+	}
+	if err := migrateExternalID(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
 	}

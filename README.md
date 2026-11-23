@@ -251,7 +251,13 @@ supports 10, 25, 50, or 100 jobs per page. Captured
 output can be loaded once the job has succeeded or failed.
 
 Search filters the entire queue before pagination and matches literal text in
-file paths, watch names, job IDs (including `#123`), statuses, and error messages.
+file paths, watch names, job IDs (including `#123`), statuses, error messages,
+and external ids. `GET /api/v1/queues/{queueID}/jobs` also accepts `external_id`
+for an exact match. The id is optional, at most 256 bytes, and omitted from
+JSON when empty. File-drop jobs leave it empty unless the process installs a
+file external-id hook (`daemon.SetFileExternalID`). A programmatic enqueue can
+set it directly. The same value may be stored on more than one job; filtering
+returns every match.
 Click a watch name in the table to filter by that watch. Active watch and status
 filters appear as removable tags beside the instance status and combine with the
 search text. Changing a filter returns to the first page; selecting another
@@ -406,6 +412,7 @@ onderzeeer status incoming
 onderzeeer queue incoming
 onderzeeer jobs incoming --status failed
 onderzeeer jobs incoming --watch incoming
+onderzeeer jobs incoming --external-id batch-42
 onderzeeer job incoming 42
 onderzeeer logs incoming 42
 onderzeeer job incoming 42 --rm
@@ -413,8 +420,10 @@ onderzeeer job incoming 42 --rm
 
 `status` prints counts, database/WAL sizes, reusable database space, and available
 filesystem space; `queue` lists queued, pending, and running jobs; `jobs` lists job
-history. `job` shows a job's runs and commands, and `logs` prints captured command
-stdout and stderr. These commands read through `onderzeeerd` and accept `--socket`.
+history. Both `queue` and `jobs` accept `--external-id` for an exact match.
+`job` shows a job's runs and commands, including its external id when one is set,
+and `logs` prints captured command stdout and stderr. These commands read through
+`onderzeeerd` and accept `--socket`.
 Stopped instances remain inspectable, even if their original YAML is gone.
 A config-directory path selects its registered queues; select one instance when
 a job ID exists in multiple queues.

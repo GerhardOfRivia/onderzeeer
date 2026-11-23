@@ -6,6 +6,49 @@ import (
 	"strings"
 )
 
+// migrateExternalID adds the optional external_id column and its index.
+// Existing rows keep an empty id. The index supports exact-match filters.
+func migrateExternalID(db *sql.DB) error {
+	exists, err := jobsColumnExists(db, "external_id")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := db.Exec(`ALTER TABLE jobs ADD COLUMN external_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add jobs.external_id: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS jobs_external_id_idx ON jobs (external_id)`); err != nil {
+		return fmt.Errorf("index jobs.external_id: %w", err)
+	}
+	return nil
+}
+
+func jobsColumnExists(db *sql.DB, column string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(jobs)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, rows.Err()
+		}
+	}
+	return false, rows.Err()
+}
+
 // SQLite cannot alter CHECK constraints. Rebuild only the job/run tables,
 // preserving IDs, history references, and AUTOINCREMENT high-water marks.
 func migratePendingState(db *sql.DB) error {

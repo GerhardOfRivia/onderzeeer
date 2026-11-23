@@ -47,6 +47,18 @@ func TestQueueReaderRemovesOnlyInactiveJobs(t *testing.T) {
 			t.Fatalf("remote search %q = %+v, %v", search, jobs, err)
 		}
 	}
+	tagged, _, err := store.Enqueue(ctx, queue.EnqueueParams{WatchName: "incoming", Path: "/tagged", ExternalID: "batch-9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := reader.ListJobs(ctx, queue.JobFilter{ExternalID: "batch-9", Limit: 10})
+	if err != nil || len(jobs) != 1 || jobs[0].ID != tagged.ID || jobs[0].ExternalID != "batch-9" {
+		t.Fatalf("external id filter = %+v, %v", jobs, err)
+	}
+	loaded, err := reader.GetJob(ctx, tagged.ID)
+	if err != nil || loaded.ExternalID != "batch-9" {
+		t.Fatalf("remote job = %+v, %v", loaded, err)
+	}
 	if err := reader.RemoveJob(ctx, job.ID); !errors.Is(err, queue.ErrJobActive) {
 		t.Fatalf("removed active job: %v", err)
 	}
@@ -67,6 +79,9 @@ func TestQueueReaderRemovesOnlyInactiveJobs(t *testing.T) {
 	}
 	if err := reader.RemoveJob(ctx, job.ID); !errors.Is(err, queue.ErrNotFound) {
 		t.Fatalf("missing removal: %v", err)
+	}
+	if err := reader.RemoveJob(ctx, tagged.ID); err != nil {
+		t.Fatal(err)
 	}
 	counts, err := reader.Counts(ctx)
 	if err != nil || counts.Total != 0 {
