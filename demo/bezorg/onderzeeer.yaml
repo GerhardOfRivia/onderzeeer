@@ -1,0 +1,31 @@
+# One job per bezorg delivery. Bezorg writes payload files first, then atomically
+# renames <name>.bezorg-done.json into this directory. Partial files and the
+# payload files themselves do not start a pipeline.
+queue:
+  workers: 2
+  max_retries: 2
+  retry_delay: 30s
+
+database:
+  path: /var/lib/onderzeeer/incoming.db
+
+watches:
+  - name: incoming
+    path: /data/incoming
+    recursive: false
+    process_existing: true
+    reprocess_on_change: false
+    settle_for: 1s
+    trigger: marker
+    marker: "*.bezorg-done.json"
+    marker_format: bezorg
+    marker_verify: sha256
+    pipeline:
+      - name: process
+        program: /opt/workflows/process
+        args:
+          - "{{manifest}}"
+        env:
+          ONDERZEEER_EXTERNAL_ID: "{{external_id}}"
+          ONDERZEEER_FILES: "{{files}}"
+        timeout: 30m

@@ -469,6 +469,63 @@ consume an attempt. Deleting a webhook deletes its delivery history.
 `onderzeeer_webhook_deliveries_total` counts tries as `succeeded`, `retry`, or
 `dead`.
 
+## bezorg and agents
+
+Bezorg finishes a download by renaming each payload out of `*.bezorg-partial`,
+then writes one `<name>.bezorg-done.json` manifest after every file for that
+job is in place. Point bezorg's `local` directory at a marker watch. The data
+files do not start pipelines. The manifest does, and its `external_id` is stored
+on that one job. `demo/bezorg/onderzeeer.yaml` is the watch.
+
+Agents should follow events or a webhook instead of polling. `QUEUE` is an id
+from `GET /api/v1/queues`. Reads follow `ONDERZEEER_WEB_PUBLIC_READ`. Creating
+a webhook still needs the bearer token and `X-onderzeeer-Web: 1`.
+
+```bash
+TOKEN=$(cat /run/onderzeeer/onderzeeer.sock.web-token)
+QUEUE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+# JSON long-poll. curl's default Accept selects this mode.
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:8080/api/v1/queues/$QUEUE/events?after=0&timeout=25&stream=poll"
+
+# Server-Sent Events. Resume with the last id, or send Last-Event-ID.
+curl -N -H "Authorization: Bearer $TOKEN" -H "Accept: text/event-stream" \
+  "http://127.0.0.1:8080/api/v1/queues/$QUEUE/events?after=0&timeout=60"
+
+# Webhook for terminal outcomes. The secret is not returned.
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-onderzeeer-Web: 1" \
+  -d '{"url":"https://agent.example/hooks/onderzeeer","secret":"replace-with-a-random-secret","events":["job.succeeded","job.failed"],"max_attempts":8}' \
+  "http://127.0.0.1:8080/api/v1/queues/$QUEUE/webhooks"
+```
+
+Pass `next` from a JSON page back as `after`. A completion event includes the
+manifest path and the manifest's `external_id`. The same id filters
+`GET /api/v1/queues/$QUEUE/jobs?external_id=batch-42`.
+
+Webhook signatures use the raw body. The signed string is the decimal unix
+time, a period, and those exact bytes. Reject a timestamp outside the window
+you accept, then compare the hex in constant time:
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: bytes, body: bytes, header: str, tolerance: int = 300) -> bool:
+    parts = dict(item.split("=", 1) for item in header.split(","))
+    stamp = int(parts["t"])
+    if abs(int(time.time()) - stamp) > tolerance:
+        return False
+    digest = hmac.new(secret, f"{stamp}.".encode() + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, parts["v1"])
+```
+
+`X-onderzeeer-Delivery` stays the same when a delivery is retried. Redirects
+are not followed. Request and response shapes are in the OpenAPI document
+served at `/docs/`.
+
 ## queue and history inspection
 
 Inspect a managed instance by name, ID, or its registered config path:
