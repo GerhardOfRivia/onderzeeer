@@ -101,7 +101,7 @@ RETURNING seq`,
 			return fmt.Errorf("queue: prune events: %w", err)
 		}
 	}
-	return nil
+	return s.queueDeliveries(ctx, tx, seq, now, eventType, job)
 }
 
 // ListEvents returns events with seq greater than after, oldest first.

@@ -15,17 +15,21 @@ var openAPISpec []byte
 // routes is shared by registration and the documentation coverage test.
 func (api *apiServer) routes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"POST /api/v1/pipelines/validate":                          api.handlePipelineValidate,
-		"POST /api/v1/pipelines/parse":                             api.handlePipelineParse,
-		"GET /api/v1/info":                                         api.handleInfo,
-		"GET /api/v1/queues":                                       api.handleQueues,
-		"GET /api/v1/queues/{queueID}/jobs":                        api.handleJobs,
-		"GET /api/v1/queues/{queueID}/events":                      api.handleEvents,
-		"GET /api/v1/queues/{queueID}/jobs/{jobID}":                api.handleJob,
-		"GET /api/v1/queues/{queueID}/commands/{commandID}/output": api.handleCommandOutput,
-		"GET /api/v1/instances":                                    api.handleInstances,
-		"POST /api/v1/queues/{queueID}/start":                      api.handleStart,
-		"POST /api/v1/instances/{instanceID}/stop":                 api.handleStop,
+		"POST /api/v1/pipelines/validate":                              api.handlePipelineValidate,
+		"POST /api/v1/pipelines/parse":                                 api.handlePipelineParse,
+		"GET /api/v1/info":                                             api.handleInfo,
+		"GET /api/v1/queues":                                           api.handleQueues,
+		"GET /api/v1/queues/{queueID}/jobs":                            api.handleJobs,
+		"GET /api/v1/queues/{queueID}/events":                          api.handleEvents,
+		"GET /api/v1/queues/{queueID}/webhooks":                        api.handleWebhooks,
+		"POST /api/v1/queues/{queueID}/webhooks":                       api.handleCreateWebhook,
+		"DELETE /api/v1/queues/{queueID}/webhooks/{webhookID}":         api.handleDeleteWebhook,
+		"GET /api/v1/queues/{queueID}/webhooks/{webhookID}/deliveries": api.handleWebhookDeliveries,
+		"GET /api/v1/queues/{queueID}/jobs/{jobID}":                    api.handleJob,
+		"GET /api/v1/queues/{queueID}/commands/{commandID}/output":     api.handleCommandOutput,
+		"GET /api/v1/instances":                                        api.handleInstances,
+		"POST /api/v1/queues/{queueID}/start":                          api.handleStart,
+		"POST /api/v1/instances/{instanceID}/stop":                     api.handleStop,
 	}
 }
 

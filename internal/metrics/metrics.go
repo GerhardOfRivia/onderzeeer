@@ -33,7 +33,10 @@ var httpRoutes = map[string]struct{}{
 	"/api/v1/queues/{queueID}/jobs":         {},
 	"/api/v1/queues/{queueID}/jobs/{jobID}": {},
 	"/api/v1/queues/{queueID}/events":       {},
-	"/api/v1/queues/{queueID}/commands/{commandID}/output": {},
+	"/api/v1/queues/{queueID}/webhooks":     {},
+	"/api/v1/queues/{queueID}/webhooks/{webhookID}":            {},
+	"/api/v1/queues/{queueID}/webhooks/{webhookID}/deliveries": {},
+	"/api/v1/queues/{queueID}/commands/{commandID}/output":     {},
 	"/api/v1/instances":                   {},
 	"/api/v1/queues/{queueID}/start":      {},
 	"/api/v1/instances/{instanceID}/stop": {},
@@ -146,6 +149,11 @@ var (
 		Name: "onderzeeer_build_info",
 		Help: "Build information for this process. The value is always 1.",
 	}, []string{"version"})
+
+	webhookDeliveries = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "onderzeeer_webhook_deliveries_total",
+		Help: "Webhook delivery tries by result (succeeded, retry, or dead).",
+	}, []string{"result"})
 )
 
 func init() {
@@ -172,6 +180,7 @@ func init() {
 		instanceDuration,
 		instancesActive,
 		buildInfo,
+		webhookDeliveries,
 	)
 	SetVersion("dev")
 	primeSeries()
@@ -203,6 +212,9 @@ func primeSeries() {
 	for _, outcome := range []string{"exited", "failed"} {
 		instancesTotal.WithLabelValues(outcome)
 		instanceDuration.WithLabelValues(outcome)
+	}
+	for _, result := range []string{"succeeded", "retry", "dead"} {
+		webhookDeliveries.WithLabelValues(result)
 	}
 }
 
@@ -303,6 +315,11 @@ func ObserveResourceWait(result string, elapsed time.Duration) {
 	resourceWaitDuration.WithLabelValues(result).Observe(seconds(elapsed))
 }
 
+// WebhookDelivery counts one webhook HTTP try. result is succeeded, retry, or dead.
+func WebhookDelivery(result string) {
+	webhookDeliveries.WithLabelValues(webhookResult(result)).Inc()
+}
+
 // InstanceStarted records that a daemon-managed instance is now running.
 func InstanceStarted() {
 	instancesActive.Inc()
@@ -370,7 +387,7 @@ func seconds(elapsed time.Duration) float64 {
 
 func methodOf(method string) string {
 	switch strings.ToUpper(strings.TrimSpace(method)) {
-	case "GET", "POST", "HEAD":
+	case "GET", "POST", "HEAD", "DELETE":
 		return strings.ToUpper(strings.TrimSpace(method))
 	default:
 		return "other"
@@ -449,6 +466,15 @@ func commandResult(result string) string {
 func waitResult(result string) string {
 	switch result {
 	case "acquired", "canceled":
+		return result
+	default:
+		return "other"
+	}
+}
+
+func webhookResult(result string) string {
+	switch result {
+	case "succeeded", "retry", "dead":
 		return result
 	default:
 		return "other"
