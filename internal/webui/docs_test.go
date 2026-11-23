@@ -290,6 +290,7 @@ func TestAPIResponsesMatchOpenAPI(t *testing.T) {
 			check("GET", "/api/v1/instances?all=false", "/api/v1/instances", readToken, 200, false)
 			check("GET", "/api/v1/instances?all=invalid", "/api/v1/instances", readToken, 400, false)
 			check("GET", queuePath+"/jobs?limit=1", "/api/v1/queues/{queueID}/jobs", readToken, 200, false)
+			check("GET", queuePath+"/events?timeout=0", "/api/v1/queues/{queueID}/events", readToken, 200, false)
 			check("GET", queuePath+"/jobs?status=queued", "/api/v1/queues/{queueID}/jobs", readToken, 200, false)
 			check("GET", queuePath+"/jobs?limit=201", "/api/v1/queues/{queueID}/jobs", readToken, 400, false)
 			check("GET", fmt.Sprintf("%s/jobs/%d", queuePath, jobID), "/api/v1/queues/{queueID}/jobs/{jobID}", readToken, 200, false)
