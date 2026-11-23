@@ -69,6 +69,7 @@ export interface Job {
   max_retries: number
   available_at: string
   last_error?: string
+  external_id?: string
   created_at: string
   updated_at: string
   started_at?: string

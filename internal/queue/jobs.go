@@ -11,7 +11,8 @@ import (
 
 const jobColumns = `
 id, watch_name, path, fingerprint, status, attempts, max_retries,
-available_at, last_error, created_at, updated_at, started_at, finished_at`
+available_at, last_error, created_at, updated_at, started_at, finished_at,
+external_id`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -38,6 +39,7 @@ func scanJob(row scanner) (Job, error) {
 		&updatedAt,
 		&startedAt,
 		&finishedAt,
+		&job.ExternalID,
 	); err != nil {
 		return Job{}, err
 	}
@@ -63,6 +65,10 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (Job, bool, error)
 	if p.MaxRetries < 0 {
 		return Job{}, false, errors.New("queue: max retries cannot be negative")
 	}
+	externalID, err := normalizeExternalID(p.ExternalID)
+	if err != nil {
+		return Job{}, false, err
+	}
 
 	now := s.timestamp()
 	availableAt := p.AvailableAt
@@ -72,8 +78,8 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (Job, bool, error)
 	row := s.db.QueryRowContext(ctx, `
 INSERT INTO jobs (
     watch_name, path, fingerprint, status, attempts, max_retries,
-    available_at, created_at, updated_at
-) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
+    available_at, created_at, updated_at, external_id
+) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
 ON CONFLICT (watch_name, path, fingerprint) DO NOTHING
 RETURNING `+jobColumns,
 		p.WatchName,
@@ -84,6 +90,7 @@ RETURNING `+jobColumns,
 		unixNano(availableAt),
 		unixNano(now),
 		unixNano(now),
+		externalID,
 	)
 	job, err := scanJob(row)
 	if err == nil {
@@ -409,6 +416,17 @@ WHERE status IN (?, ?)`, StatusQueued, unixNano(now), reason, unixNano(now), Sta
 		return 0, fmt.Errorf("queue: commit recovery: %w", err)
 	}
 	return count, nil
+}
+
+func normalizeExternalID(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if strings.ContainsRune(id, 0) {
+		return "", errors.New("queue: external id contains NUL")
+	}
+	if len(id) > MaxExternalIDBytes {
+		return "", fmt.Errorf("queue: external id is longer than %d bytes", MaxExternalIDBytes)
+	}
+	return id, nil
 }
 
 func requireOneRow(result sql.Result) error {

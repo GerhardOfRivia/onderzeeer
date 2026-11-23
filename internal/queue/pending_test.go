@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestPendingTransitionsCountsAndHistory(t *testing.T) {
@@ -138,40 +137,44 @@ func TestPendingMigrationPreservesHistoryAndIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.SetMaxOpenConns(1)
-	defer db.Close()
 	legacy := strings.ReplaceAll(schema, "'PENDING', ", "")
 	if _, err := db.Exec("PRAGMA foreign_keys = ON;" + legacy); err != nil {
 		t.Fatal(err)
 	}
-	old := &Store{db: db, now: time.Now}
-	if _, _, err := old.Enqueue(ctx, EnqueueParams{WatchName: "incoming", Path: "/done"}); err != nil {
+	// The fixture is a pre-migration queue, so it has neither PENDING nor
+	// external_id. Insert history directly; current Store methods require the
+	// upgraded jobs table.
+	const now = int64(1)
+	if _, err := db.Exec(`INSERT INTO jobs (
+		watch_name, path, fingerprint, status, attempts, max_retries,
+		available_at, last_error, created_at, updated_at, started_at, finished_at
+	) VALUES ('incoming', '/done', '', 'SUCCEEDED', 1, 0, ?, '', ?, ?, ?, ?)`, now, now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
-	first, err := old.Claim(ctx)
-	if err != nil {
+	if _, err := db.Exec(`INSERT INTO runs (job_id, attempt, status, error, started_at, finished_at)
+		VALUES (1, 1, 'SUCCEEDED', '', ?, ?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
-	command, err := old.StartCommand(ctx, CommandStart{RunID: first.RunID, Name: "old", Program: "unused"})
-	if err != nil {
+	if _, err := db.Exec(`INSERT INTO command_executions (
+		run_id, sequence, name, program, args_json, env_json, working_dir,
+		timeout_ns, status, exit_code, stdout, stderr, error, started_at, finished_at
+	) VALUES (1, 0, 'old', 'unused', '[]', '[]', '', 0, 'SUCCEEDED', 0, 'preserved', '', '', ?, ?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := old.CompleteCommand(ctx, command, CommandResult{Status: CommandSucceeded, Stdout: "preserved"}); err != nil {
+	if _, err := db.Exec(`INSERT INTO jobs (
+		watch_name, path, fingerprint, status, attempts, max_retries,
+		available_at, last_error, created_at, updated_at, started_at
+	) VALUES ('incoming', '/active', '', 'RUNNING', 1, 0, ?, '', ?, ?, ?)`, now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := old.Succeed(ctx, first.ID, first.RunID); err != nil {
+	if _, err := db.Exec(`INSERT INTO runs (job_id, attempt, status, error, started_at)
+		VALUES (2, 1, 'RUNNING', '', ?)`, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := old.Enqueue(ctx, EnqueueParams{WatchName: "incoming", Path: "/active"}); err != nil {
+	if _, err := db.Exec(`INSERT INTO resource_wait_interruptions VALUES (1); UPDATE sqlite_sequence SET seq = 100 WHERE name IN ('jobs', 'runs')`); err != nil {
 		t.Fatal(err)
 	}
-	active, err := old.Claim(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO resource_wait_interruptions VALUES (?); UPDATE sqlite_sequence SET seq = 100 WHERE name IN ('jobs', 'runs');", first.RunID); err != nil {
-		t.Fatal(err)
-	}
-	if err := old.Close(); err != nil {
+	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	store, err := Open(path)
@@ -179,8 +182,8 @@ func TestPendingMigrationPreservesHistoryAndIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	commands, err := store.ListCommands(ctx, first.RunID)
-	if err != nil || len(commands) != 1 || commands[0].ID != command || commands[0].Stdout != "preserved" {
+	commands, err := store.ListCommands(ctx, 1)
+	if err != nil || len(commands) != 1 || commands[0].ID != 1 || commands[0].Stdout != "preserved" {
 		t.Fatalf("migrated commands: %+v, %v", commands, err)
 	}
 	var exemptions, foreignKeys int
@@ -190,10 +193,10 @@ func TestPendingMigrationPreservesHistoryAndIDs(t *testing.T) {
 	if err := store.db.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys); err != nil || foreignKeys != 1 {
 		t.Fatalf("foreign keys = %d, %v", foreignKeys, err)
 	}
-	if err := store.MarkPending(ctx, active.ID, active.RunID); err != nil {
+	if err := store.MarkPending(ctx, 2, 2); err != nil {
 		t.Fatal(err)
 	}
-	if status, err := store.Fail(ctx, active.ID, active.RunID, "resume persistence failed", 0); err != nil || status != StatusFailed {
+	if status, err := store.Fail(ctx, 2, 2, "resume persistence failed", 0); err != nil || status != StatusFailed {
 		t.Fatalf("fail pending: %s, %v", status, err)
 	}
 	if _, _, err := store.Enqueue(ctx, EnqueueParams{WatchName: "incoming", Path: "/new"}); err != nil {
