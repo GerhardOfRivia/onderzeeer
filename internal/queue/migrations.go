@@ -24,6 +24,36 @@ func migrateExternalID(db *sql.DB) error {
 	return nil
 }
 
+func migrateJobSubmission(db *sql.DB) error {
+	if err := addJobsColumn(db, "priority", `ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	if err := addJobsColumn(db, "metadata", `ALTER TABLE jobs ADD COLUMN metadata TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS jobs_claim_priority_idx ON jobs (status, priority DESC, created_at, id)`); err != nil {
+		return fmt.Errorf("index jobs priority: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS jobs_external_id_unique ON jobs (external_id) WHERE external_id != ''`); err != nil {
+		return fmt.Errorf("unique external_id index: clear duplicate external ids and retry: %w", err)
+	}
+	return nil
+}
+
+func addJobsColumn(db *sql.DB, column, statement string) error {
+	exists, err := jobsColumnExists(db, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(statement); err != nil {
+		return fmt.Errorf("add jobs.%s: %w", column, err)
+	}
+	return nil
+}
+
 func jobsColumnExists(db *sql.DB, column string) (bool, error) {
 	rows, err := db.Query(`PRAGMA table_info(jobs)`)
 	if err != nil {

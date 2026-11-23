@@ -252,12 +252,12 @@ output can be loaded once the job has succeeded or failed.
 
 Search filters the entire queue before pagination and matches literal text in
 file paths, watch names, job IDs (including `#123`), statuses, error messages,
-and external ids. `GET /api/v1/queues/{queueID}/jobs` also accepts `external_id`
+external ids, and job metadata. `GET /api/v1/queues/{queueID}/jobs` also accepts `external_id`
 for an exact match. The id is optional, at most 256 bytes, and omitted from
 JSON when empty. File-drop jobs leave it empty unless the process installs a
 file external-id hook (`daemon.SetFileExternalID`). A programmatic enqueue can
-set it directly. The same value may be stored on more than one job; filtering
-returns every match.
+set it directly. A non-empty id is unique in the queue, so filtering returns
+at most one job.
 Click a watch name in the table to filter by that watch. Active watch and status
 filters appear as removable tags beside the instance status and combine with the
 search text. Changing a filter returns to the first page; selecting another
@@ -468,6 +468,30 @@ consume an attempt. Deleting a webhook deletes its delivery history.
 
 `onderzeeer_webhook_deliveries_total` counts tries as `succeeded`, `retry`, or
 `dead`.
+
+## creating jobs
+
+File discovery remains the way a download becomes a pipeline: bezorg renames
+the finished file into a watched directory and onderzeeer enqueues it. An agent
+can also create a job for a file that is already in a watch:
+
+```http
+POST /api/v1/queues/{queueID}/jobs
+```
+
+The JSON body has `path` (required), plus optional `watch`, `external_id`,
+`priority`, and `metadata`. `path` must be an absolute regular file inside a
+configured watch. Symlinks are resolved and rejected when the target leaves
+the watch. `priority` defaults to 0; higher values are claimed first.
+`metadata` is a JSON object of at most 8192 bytes. `max_retries` comes from
+the queue configuration.
+
+A non-empty `external_id` is unique in the queue. Repeating the POST returns
+**409** with code `external_id_conflict` and the existing job. Treat that as
+the idempotent result and continue with the returned job. An empty id creates
+a new job even if file discovery already queued the same path. The same bearer
+token, `Content-Type: application/json`, and `X-onderzeeer-Web: 1` header used
+by start and stop are required.
 
 ## queue and history inspection
 

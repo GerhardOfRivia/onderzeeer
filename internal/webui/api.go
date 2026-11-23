@@ -86,20 +86,22 @@ type instanceResponse struct {
 }
 
 type jobView struct {
-	ID          int64        `json:"id"`
-	WatchName   string       `json:"watch_name"`
-	Path        string       `json:"path"`
-	Fingerprint string       `json:"fingerprint,omitempty"`
-	Status      queue.Status `json:"status"`
-	Attempts    int          `json:"attempts"`
-	MaxRetries  int          `json:"max_retries"`
-	AvailableAt time.Time    `json:"available_at"`
-	LastError   string       `json:"last_error,omitempty"`
-	ExternalID  string       `json:"external_id,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
-	StartedAt   *time.Time   `json:"started_at,omitempty"`
-	FinishedAt  *time.Time   `json:"finished_at,omitempty"`
+	ID          int64           `json:"id"`
+	WatchName   string          `json:"watch_name"`
+	Path        string          `json:"path"`
+	Fingerprint string          `json:"fingerprint,omitempty"`
+	Status      queue.Status    `json:"status"`
+	Attempts    int             `json:"attempts"`
+	MaxRetries  int             `json:"max_retries"`
+	AvailableAt time.Time       `json:"available_at"`
+	LastError   string          `json:"last_error,omitempty"`
+	ExternalID  string          `json:"external_id,omitempty"`
+	Priority    int             `json:"priority"`
+	Metadata    json.RawMessage `json:"metadata,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	StartedAt   *time.Time      `json:"started_at,omitempty"`
+	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
 }
 
 type jobsResponse struct {
@@ -608,11 +610,14 @@ func toJobView(job queue.Job, includeFingerprint bool) jobView {
 	view := jobView{
 		ID: job.ID, WatchName: job.WatchName, Path: job.Path, Status: job.Status,
 		Attempts: job.Attempts, MaxRetries: job.MaxRetries, AvailableAt: job.AvailableAt,
-		LastError: job.LastError, ExternalID: job.ExternalID, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
+		LastError: job.LastError, ExternalID: job.ExternalID, Priority: job.Priority, CreatedAt: job.CreatedAt, UpdatedAt: job.UpdatedAt,
 		StartedAt: job.StartedAt, FinishedAt: job.FinishedAt,
 	}
 	if includeFingerprint {
 		view.Fingerprint = job.Fingerprint
+	}
+	if job.Metadata != "" {
+		view.Metadata = json.RawMessage(job.Metadata)
 	}
 	return view
 }

@@ -91,12 +91,13 @@ OR instr(lower(watch_name), lower(?)) > 0
 OR instr(lower(status), lower(?)) > 0
 OR instr(lower(last_error), lower(?)) > 0
 OR instr(lower(external_id), lower(?)) > 0
+OR instr(lower(metadata), lower(?)) > 0
 OR instr(CAST(id AS TEXT), ?) > 0)`)
 		idSearch := strings.TrimPrefix(search, "#")
 		if idSearch == "" {
 			idSearch = search
 		}
-		args = append(args, search, search, search, search, search, idSearch)
+		args = append(args, search, search, search, search, search, search, idSearch)
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")

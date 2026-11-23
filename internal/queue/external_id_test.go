@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,7 +31,7 @@ func TestExternalIDIsStoredFilteredAndPreservedOnDuplicate(t *testing.T) {
 	other, created, err := store.Enqueue(ctx, EnqueueParams{
 		WatchName: "incoming", Path: "/drop/b.csv", Fingerprint: "v1", ExternalID: "batch-7",
 	})
-	if err != nil || !created || other.ExternalID != "batch-7" {
+	if !errors.Is(err, ErrExternalIDInUse) || created || other.ID != first.ID {
 		t.Fatalf("second job = %+v created=%v err=%v", other, created, err)
 	}
 	plain, _, err := store.Enqueue(ctx, EnqueueParams{WatchName: "incoming", Path: "/drop/c.csv", Fingerprint: "v1"})
@@ -42,11 +43,11 @@ func TestExternalIDIsStoredFilteredAndPreservedOnDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matched) != 2 || matched[0].ID != other.ID || matched[1].ID != first.ID {
+	if len(matched) != 1 || matched[0].ID != first.ID {
 		t.Fatalf("filter = %+v", matched)
 	}
 	bySearch, err := store.ListJobs(ctx, JobFilter{Search: "BATCH-7"})
-	if err != nil || len(bySearch) != 2 {
+	if err != nil || len(bySearch) != 1 {
 		t.Fatalf("search = %+v err=%v", bySearch, err)
 	}
 	none, err := store.ListJobs(ctx, JobFilter{ExternalID: "missing"})

@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,7 +13,7 @@ import (
 const jobColumns = `
 id, watch_name, path, fingerprint, status, attempts, max_retries,
 available_at, last_error, created_at, updated_at, started_at, finished_at,
-external_id`
+external_id, priority, metadata`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -40,6 +41,8 @@ func scanJob(row scanner) (Job, error) {
 		&startedAt,
 		&finishedAt,
 		&job.ExternalID,
+		&job.Priority,
+		&job.Metadata,
 	); err != nil {
 		return Job{}, err
 	}
@@ -69,6 +72,13 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (Job, bool, error)
 	if err != nil {
 		return Job{}, false, err
 	}
+	if p.Priority < -1_000_000 || p.Priority > 1_000_000 {
+		return Job{}, false, errors.New("queue: priority must be from -1000000 to 1000000")
+	}
+	metadata, err := normalizeMetadata(p.Metadata)
+	if err != nil {
+		return Job{}, false, err
+	}
 
 	now := s.timestamp()
 	availableAt := p.AvailableAt
@@ -83,8 +93,8 @@ func (s *Store) Enqueue(ctx context.Context, p EnqueueParams) (Job, bool, error)
 	row := tx.QueryRowContext(ctx, `
 INSERT INTO jobs (
     watch_name, path, fingerprint, status, attempts, max_retries,
-    available_at, created_at, updated_at, external_id
-) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+    available_at, created_at, updated_at, external_id, priority, metadata
+) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (watch_name, path, fingerprint) DO NOTHING
 RETURNING `+jobColumns,
 		p.WatchName,
@@ -96,8 +106,21 @@ RETURNING `+jobColumns,
 		unixNano(now),
 		unixNano(now),
 		externalID,
+		p.Priority,
+		metadata,
 	)
 	job, err := scanJob(row)
+	if isExternalIDConflict(err) {
+		_ = tx.Rollback()
+		existing, findErr := scanJob(s.db.QueryRowContext(ctx, `
+SELECT `+jobColumns+`
+FROM jobs
+WHERE external_id = ?`, externalID))
+		if findErr != nil {
+			return Job{}, false, fmt.Errorf("queue: find external id: %w", findErr)
+		}
+		return existing, false, ErrExternalIDInUse
+	}
 	if err == nil {
 		if err := s.insertEvent(ctx, tx, now, EventJobEnqueued, job); err != nil {
 			return Job{}, false, err
@@ -149,7 +172,7 @@ WHERE id = (
     SELECT id
     FROM jobs
     WHERE status = ? AND available_at <= ?
-    ORDER BY created_at, id
+    ORDER BY priority DESC, created_at, id
     LIMIT 1
 )
 RETURNING `+jobColumns,
@@ -470,6 +493,29 @@ WHERE status IN (?, ?)`, StatusQueued, unixNano(now), reason, unixNano(now), Sta
 		return 0, fmt.Errorf("queue: commit recovery: %w", err)
 	}
 	return count, nil
+}
+
+func isExternalIDConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "jobs.external_id")
+}
+
+func normalizeMetadata(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if len(raw) > 8192 {
+		return "", errors.New("queue: metadata is larger than 8192 bytes")
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &object); err != nil || object == nil {
+		return "", errors.New("queue: metadata must be a JSON object")
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return "", fmt.Errorf("queue: encode metadata: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func normalizeExternalID(id string) (string, error) {

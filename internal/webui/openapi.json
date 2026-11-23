@@ -144,7 +144,7 @@
           "Jobs"
         ],
         "summary": "List and filter jobs",
-        "description": "Filters are combined before pagination. status is case-insensitive. watch is an exact watch name; watch, search, and external_id are trimmed. external_id is an exact match of at most 256 bytes. search matches literal text in paths, watch names, job IDs (including #123), statuses, error messages, and external ids.",
+        "description": "Filters are combined before pagination. status is case-insensitive. watch is an exact watch name; watch, search, and external_id are trimmed. external_id is an exact match of at most 256 bytes. search matches literal text in paths, watch names, job IDs (including #123), statuses, error messages, external ids, and metadata.",
         "responses": {
           "200": {
             "description": "List and filter jobs.",
@@ -245,6 +245,22 @@
             }
           }
         ]
+      },
+      "post": {
+        "operationId": "createJob",
+        "tags": ["Jobs"],
+        "summary": "Create a durable job",
+        "description": "Enqueues a job for an existing regular file inside a configured watch. The stored path is symlink-resolved. max_retries comes from the queue configuration, not the request. priority defaults to 0 and higher values are claimed first.\n\nA non-empty external_id is an idempotency key for the queue. A second request with the same id returns 409 and the existing job; the client should continue with that job. An empty external_id creates a new job even when the path was already queued by file discovery, because the fingerprint is unique to the request. File discovery remains the path that starts a pipeline when a downloader such as bezorg renames a file into a watch.\n\nRequires the bearer token, Content-Type application/json, and X-onderzeeer-Web: 1.",
+        "responses": {
+          "201": {"description": "Job created.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Job"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "400": {"$ref": "#/components/responses/InvalidRequest"},
+          "404": {"$ref": "#/components/responses/QueueNotFound"},
+          "409": {"description": "The external_id or fingerprint already belongs to a job. The body includes that job.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/JobConflict"}}}},
+          "503": {"$ref": "#/components/responses/QueueUnavailable"}
+        },
+        "parameters": [{"$ref": "#/components/parameters/QueueID"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/JobCreate"}}}}
       }
     },
     "/api/v1/queues/{queueID}/events": {
@@ -1579,6 +1595,58 @@
           "next": 0
         }
       },
+      "JobCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": {"type": "string", "description": "Absolute path of an existing regular file inside a watch. Symlinks are resolved and must stay inside the watch."},
+          "watch": {"type": "string", "description": "Watch name. Required when the path is inside more than one watch."},
+          "external_id": {"type": "string", "maxLength": 256, "description": "Idempotency key. A repeat create returns 409 with the existing job."},
+          "priority": {"type": "integer", "minimum": -1000000, "maximum": 1000000, "default": 0},
+          "metadata": {"type": "object", "additionalProperties": true, "description": "JSON object of at most 8192 bytes."}
+        },
+        "example": {
+          "path": "/data/incoming/report.txt",
+          "watch": "incoming",
+          "external_id": "batch-42",
+          "priority": 10,
+          "metadata": {"source": "bezorg"}
+        }
+      },
+      "JobConflict": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error", "job"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["code", "message"],
+            "properties": {
+              "code": {"type": "string"},
+              "message": {"type": "string"}
+            }
+          },
+          "job": {"$ref": "#/components/schemas/Job"}
+        },
+        "example": {
+          "error": {"code": "external_id_conflict", "message": "A job with this external_id already exists"},
+          "job": {
+            "id": 1,
+            "watch_name": "incoming",
+            "path": "/data/incoming/report.txt",
+            "status": "QUEUED",
+            "attempts": 0,
+            "max_retries": 3,
+            "available_at": "2026-09-26T12:00:00Z",
+            "external_id": "batch-42",
+            "priority": 0,
+            "created_at": "2026-09-26T12:00:00Z",
+            "updated_at": "2026-09-26T12:00:00Z"
+          }
+        }
+      },
       "Job": {
         "type": "object",
         "additionalProperties": false,
@@ -1637,7 +1705,18 @@
           "external_id": {
             "type": "string",
             "maxLength": 256,
-            "description": "Optional caller-defined identifier. Omitted when empty. File-drop jobs leave it empty unless the process installs a file external-id hook. At most 256 UTF-8 bytes."
+            "description": "Optional caller-defined identifier. Omitted when empty. A non-empty value is unique in the queue. File-drop jobs leave it empty unless the process installs a file external-id hook. At most 256 UTF-8 bytes."
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": -1000000,
+            "maximum": 1000000,
+            "description": "Claim order. Higher values run first. File-drop jobs use 0. Omitted only by older examples; responses include it."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "JSON object stored with a programmatically created job. Omitted when empty."
           },
           "created_at": {
             "type": "string",

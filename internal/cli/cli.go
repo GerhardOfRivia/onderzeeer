@@ -697,6 +697,12 @@ func printJobFields(output io.Writer, job *queue.Job) {
 	if job.ExternalID != "" {
 		fmt.Fprintf(w, "External ID:\t%s\n", job.ExternalID)
 	}
+	if job.Priority != 0 {
+		fmt.Fprintf(w, "Priority:\t%d\n", job.Priority)
+	}
+	if job.Metadata != "" {
+		fmt.Fprintf(w, "Metadata:\t%s\n", job.Metadata)
+	}
 	fmt.Fprintf(w, "Attempts:\t%d/%d\n", job.Attempts, job.MaxRetries+1)
 	fmt.Fprintf(w, "Available:\t%s\n", formatTime(job.AvailableAt))
 	fmt.Fprintf(w, "Created:\t%s\n", formatTime(job.CreatedAt))

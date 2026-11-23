@@ -94,6 +94,10 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 			MaxRetries:  cfg.Queue.MaxRetries,
 			ExternalID:  externalID,
 		})
+		if errors.Is(err, queue.ErrExternalIDInUse) {
+			logger.Warn("file external id already belongs to another job", "job_id", job.ID, "watch", watch.Name, "file", file.Path, "external_id", externalID)
+			return nil
+		}
 		if err != nil {
 			return err
 		}

@@ -20,6 +20,7 @@ func (api *apiServer) routes() map[string]http.HandlerFunc {
 		"GET /api/v1/info":                                             api.handleInfo,
 		"GET /api/v1/queues":                                           api.handleQueues,
 		"GET /api/v1/queues/{queueID}/jobs":                            api.handleJobs,
+		"POST /api/v1/queues/{queueID}/jobs":                           api.handleCreateJob,
 		"GET /api/v1/queues/{queueID}/events":                          api.handleEvents,
 		"GET /api/v1/queues/{queueID}/webhooks":                        api.handleWebhooks,
 		"POST /api/v1/queues/{queueID}/webhooks":                       api.handleCreateWebhook,

@@ -35,6 +35,9 @@ var (
 	ErrInvalidTransition = errors.New("invalid queue state transition")
 	// ErrJobActive prevents removal while a worker owns a job.
 	ErrJobActive = errors.New("job is running or pending; stop its instance before removing it")
+	// ErrExternalIDInUse means a non-empty external id already belongs to a
+	// different job. The returned job is the existing one.
+	ErrExternalIDInUse = errors.New("external id already belongs to another job")
 )
 
 // Job is a discovered file and its durable execution state. RunID and Attempt
@@ -54,8 +57,15 @@ type Job struct {
 	StartedAt   *time.Time
 	FinishedAt  *time.Time
 	// ExternalID is an optional caller-defined identifier. Empty means unset.
-	// File-drop leaves it empty unless a hook supplies one.
+	// File-drop leaves it empty unless a hook supplies one. A non-empty id is
+	// unique within the queue.
 	ExternalID string
+	// Priority breaks claim ties. Higher values are claimed first. Zero is the
+	// file-drop default.
+	Priority int
+	// Metadata is a JSON object supplied when a job is created through the API.
+	// Empty means none.
+	Metadata string
 
 	RunID   int64
 	Attempt int
@@ -75,6 +85,8 @@ type EnqueueParams struct {
 	MaxRetries  int
 	AvailableAt time.Time
 	ExternalID  string
+	Priority    int
+	Metadata    string
 }
 
 // Run records one claimed execution attempt for a job.

@@ -150,7 +150,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 		"PRAGMA journal_mode = WAL",
 		"PRAGMA synchronous = NORMAL",
 	} {
-		if _, err := db.Exec(pragma); err != nil {
+		if err := execBusy(db, pragma); err != nil {
 			_ = db.Close()
 			return nil, fmt.Errorf("queue: configure database %q: %w", path, err)
 		}
@@ -172,6 +172,10 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
 	}
 	if err := migrateWebhooks(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
+	}
+	if err := migrateJobSubmission(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("queue: upgrade database %q: %w", path, err)
 	}
@@ -281,6 +285,25 @@ func OpenReadOnlyContext(ctx context.Context, path string) (*Store, error) {
 	}
 
 	return &Store{db: db, now: time.Now}, nil
+}
+
+func execBusy(db *sql.DB, query string) error {
+	var err error
+	for attempt := 0; attempt < 50; attempt++ {
+		if _, err = db.Exec(query); err == nil || !sqliteBusy(err) {
+			return err
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return err
+}
+
+func sqliteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	return strings.Contains(message, "SQLITE_BUSY") || strings.Contains(message, "database is locked")
 }
 
 func readOnlyDSN(path string) (string, error) {
