@@ -255,8 +255,10 @@ file paths, watch names, job IDs (including `#123`), statuses, error messages,
 and external ids. `GET /api/v1/queues/{queueID}/jobs` also accepts `external_id`
 for an exact match. The id is optional, at most 256 bytes, and omitted from
 JSON when empty. File-drop jobs leave it empty unless the process installs a
-file external-id hook (`daemon.SetFileExternalID`). A programmatic enqueue can
-set it directly. The same value may be stored on more than one job; filtering
+file external-id hook (`daemon.SetFileExternalID`) or a bezorg completion
+manifest supplies one. A marker watch stores that id on the one job for the
+manifest. The same value may be stored on more than one ordinary file job;
+filtering
 returns every match.
 Click a watch name in the table to filter by that watch. Active watch and status
 filters appear as removable tags beside the instance status and combine with the
