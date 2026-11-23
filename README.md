@@ -387,6 +387,7 @@ export `_bucket`, `_sum`, and `_count`.
 | `onderzeeer_instances_total` | counter | `outcome` | Instances that stopped. `outcome` is `exited` or `failed`. |
 | `onderzeeer_instance_duration_seconds` | histogram | `outcome` | How long a daemon-managed instance ran. |
 | `onderzeeer_build_info` | gauge | `version` | Always 1. The `version` label is the binary version (`dev` when built without an override). |
+| `onderzeeer_webhook_deliveries_total` | counter | `result` | Webhook HTTP tries. `result` is `succeeded`, `retry`, or `dead`. URLs are not labels. |
 
 The same registry includes the standard Go collectors (`go_goroutines`,
 `go_threads`, `go_info`, `go_gc_duration_seconds`, `go_memstats_*`, and the
@@ -432,6 +433,41 @@ file discovery does not emit another `job.enqueued`.
   the jobs API for anything the gap skipped.
 - Reads use the same authentication as other `GET` routes, including
   `ONDERZEEER_WEB_PUBLIC_READ`.
+
+## webhooks
+
+A queue can register up to 20 HTTPS or HTTP endpoints. When a matching event is
+committed, onderzeeer inserts a delivery row in the same transaction. The
+instance process posts that row while it is running. Stopping the instance
+pauses delivery; pending rows are sent after it starts again.
+
+```http
+POST /api/v1/queues/{queueID}/webhooks
+GET  /api/v1/queues/{queueID}/webhooks
+DELETE /api/v1/queues/{queueID}/webhooks/{webhookID}
+GET  /api/v1/queues/{queueID}/webhooks/{webhookID}/deliveries?status=pending
+```
+
+Create and delete require the bearer token, `Content-Type: application/json`
+on create, and `X-onderzeeer-Web: 1`, same as start and stop. List and
+deliveries are ordinary reads. The secret is stored in the queue database and
+is never returned or logged. An empty `events` list subscribes to every event
+type. `max_attempts` defaults to 8 and must be from 1 to 20.
+
+The POST body is the event JSON, including `queue_id` for webhooks created
+through this API. Headers are `X-onderzeeer-Event`, `X-onderzeeer-Delivery`
+(a stable UUID for the delivery, repeated on retries), and
+`X-onderzeeer-Signature: t=<unix>,v1=<hex>`. The signed string is the decimal
+unix timestamp, a period, and the exact body bytes: `<t>.<body>`. `v1` is
+lowercase hex HMAC-SHA256 using the webhook secret. Redirects are not followed.
+A 2xx response marks the delivery succeeded. Any other result retries with
+exponential backoff starting at 2 seconds and capped at 5 minutes. After
+`max_attempts` failures the row is `dead` and stays visible on the deliveries
+endpoint. A crash during a try leases the row for 30 seconds and does not
+consume an attempt. Deleting a webhook deletes its delivery history.
+
+`onderzeeer_webhook_deliveries_total` counts tries as `succeeded`, `retry`, or
+`dead`.
 
 ## queue and history inspection
 

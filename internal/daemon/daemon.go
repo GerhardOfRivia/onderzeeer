@@ -136,7 +136,12 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 		defer close(maintenanceDone)
 		maintainQueue(runContext, store, cfg.Database, logger)
 	}()
-	defer func() { cancel(); <-maintenanceDone }()
+	webhookDone := make(chan struct{})
+	go func() {
+		defer close(webhookDone)
+		deliverWebhooks(runContext, store, logger)
+	}()
+	defer func() { cancel(); <-maintenanceDone; <-webhookDone }()
 	type result struct {
 		component string
 		err       error
