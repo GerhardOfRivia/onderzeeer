@@ -40,6 +40,16 @@ func maintenancePass(ctx context.Context, store *queue.Store, cfg config.Databas
 	if ctx.Err() != nil {
 		return
 	}
+	pruned, err := store.PruneEvents(ctx, queue.DefaultEventRetention)
+	if pruned > 0 {
+		logger.Info("pruned queue events", "events", pruned, "retained", queue.DefaultEventRetention)
+	}
+	if err != nil && ctx.Err() == nil {
+		logger.Warn("event retention failed; will retry", "error", err)
+	}
+	if ctx.Err() != nil {
+		return
+	}
 	info, err := store.Storage(ctx)
 	if err != nil {
 		logger.Warn("cannot inspect queue storage", "error", err)
