@@ -16,6 +16,7 @@ func TestPublicReadPermissions(t *testing.T) {
 		"/api/v1/info", "/api/v1/queues", "/api/v1/instances?all=true",
 		queuePath + "/jobs?status=SUCCEEDED&limit=1",
 		queuePath + "/events?timeout=0",
+		queuePath + "/webhooks",
 		fmt.Sprintf("%s/jobs/%d", queuePath, jobID),
 		fmt.Sprintf("%s/commands/%d/output", queuePath, commandID),
 	}
