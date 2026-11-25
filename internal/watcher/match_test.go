@@ -58,6 +58,24 @@ func TestMatch(t *testing.T) {
 			wantMatch: false,
 		},
 		{
+			name:      "marker ignores data and partials",
+			watch:     config.WatchConfig{Path: root, Trigger: config.TriggerMarker, Marker: "*.bezorg-done.json"},
+			path:      filepath.Join(root, "scene.tif.bezorg-partial"),
+			wantMatch: false,
+		},
+		{
+			name:      "marker selects the completion file",
+			watch:     config.WatchConfig{Path: root, Trigger: config.TriggerMarker, Marker: "*.bezorg-done.json"},
+			path:      filepath.Join(root, "scene.bezorg-done.json"),
+			wantMatch: true,
+		},
+		{
+			name:      "empty marker name",
+			watch:     config.WatchConfig{Path: root, Trigger: config.TriggerMarker, Marker: "_SUCCESS"},
+			path:      filepath.Join(root, "_SUCCESS"),
+			wantMatch: true,
+		},
+		{
 			name:      "outside root",
 			watch:     config.WatchConfig{Path: root, Recursive: true},
 			path:      filepath.Join(filepath.Dir(root), "outside.csv"),

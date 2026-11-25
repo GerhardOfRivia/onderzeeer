@@ -101,17 +101,56 @@ type DatabaseConfig struct {
 	WarnFreePercent        *float64  `yaml:"warn_free_percent,omitempty" json:",omitempty"`
 }
 
+// Trigger selects what creates a job. The empty value and "file" keep the
+// original behavior: every matched file is a job. "marker" creates one job
+// for a completion file instead of for each data file.
+type Trigger string
+
+const (
+	TriggerFile   Trigger = "file"
+	TriggerMarker Trigger = "marker"
+)
+
+// MarkerFormat selects how a completion file is interpreted.
+type MarkerFormat string
+
+const (
+	MarkerEmpty  MarkerFormat = "empty"
+	MarkerBezorg MarkerFormat = "bezorg"
+)
+
+// MarkerVerify selects the checks applied to files named by a bezorg manifest.
+type MarkerVerify string
+
+const (
+	MarkerVerifyExists MarkerVerify = "exists"
+	MarkerVerifySize   MarkerVerify = "size"
+	MarkerVerifySHA256 MarkerVerify = "sha256"
+)
+
 // WatchConfig describes one filesystem source and its command pipeline.
 type WatchConfig struct {
-	Name              string          `yaml:"name"`
-	Path              string          `yaml:"path"`
-	Recursive         bool            `yaml:"recursive"`
-	ProcessExisting   bool            `yaml:"process_existing"`
-	ReprocessOnChange bool            `yaml:"reprocess_on_change"`
-	Include           []string        `yaml:"include"`
-	Exclude           []string        `yaml:"exclude"`
-	SettleFor         Duration        `yaml:"settle_for"`
-	Pipeline          []CommandConfig `yaml:"pipeline"`
+	Name              string   `yaml:"name"`
+	Path              string   `yaml:"path"`
+	Recursive         bool     `yaml:"recursive"`
+	ProcessExisting   bool     `yaml:"process_existing"`
+	ReprocessOnChange bool     `yaml:"reprocess_on_change"`
+	Include           []string `yaml:"include"`
+	Exclude           []string `yaml:"exclude"`
+	SettleFor         Duration `yaml:"settle_for"`
+	// Trigger, Marker, MarkerFormat, and MarkerVerify are omitted from the
+	// effective fingerprint when unset so existing file watches stay stable.
+	Trigger      Trigger         `yaml:"trigger,omitempty" json:",omitempty"`
+	Marker       string          `yaml:"marker,omitempty" json:",omitempty"`
+	MarkerFormat MarkerFormat    `yaml:"marker_format,omitempty" json:",omitempty"`
+	MarkerVerify MarkerVerify    `yaml:"marker_verify,omitempty" json:",omitempty"`
+	Pipeline     []CommandConfig `yaml:"pipeline"`
+}
+
+// TriggersOnMarker reports whether this watch creates one job per completion
+// file instead of one job per data file.
+func (watch WatchConfig) TriggersOnMarker() bool {
+	return watch.Trigger == TriggerMarker
 }
 
 // MountConfig describes one bind mount for a structured container invocation.
@@ -629,6 +668,9 @@ func (c *Config) Validate() error {
 		if watch.SettleFor.Duration < 0 {
 			return fmt.Errorf("%s.settle_for must not be negative", prefix)
 		}
+		if err := validateWatchTrigger(prefix, watch); err != nil {
+			return err
+		}
 		for _, group := range []struct {
 			name     string
 			patterns []string
@@ -711,6 +753,52 @@ func (executor ExecutorType) defaultProgram() string {
 	default:
 		return ""
 	}
+}
+
+func validateWatchTrigger(prefix string, watch *WatchConfig) error {
+	watch.Trigger = Trigger(strings.ToLower(strings.TrimSpace(string(watch.Trigger))))
+	watch.MarkerFormat = MarkerFormat(strings.ToLower(strings.TrimSpace(string(watch.MarkerFormat))))
+	watch.MarkerVerify = MarkerVerify(strings.ToLower(strings.TrimSpace(string(watch.MarkerVerify))))
+	watch.Marker = strings.TrimSpace(watch.Marker)
+	switch watch.Trigger {
+	case "", TriggerFile:
+		if watch.Marker != "" || watch.MarkerFormat != "" || watch.MarkerVerify != "" {
+			return fmt.Errorf("%s.marker, marker_format, and marker_verify require trigger: marker", prefix)
+		}
+		return nil
+	case TriggerMarker:
+	default:
+		return fmt.Errorf("%s.trigger %q is invalid; must be file or marker", prefix, watch.Trigger)
+	}
+	if watch.Marker == "" {
+		return fmt.Errorf("%s.marker is required when trigger is marker", prefix)
+	}
+	if err := validateGlob(watch.Marker); err != nil {
+		return fmt.Errorf("%s.marker: %w", prefix, err)
+	}
+	if len(watch.Include) > 0 {
+		return fmt.Errorf("%s.include cannot be combined with trigger marker; the marker pattern selects the completion file and exclude still applies", prefix)
+	}
+	switch watch.MarkerFormat {
+	case "", MarkerEmpty, MarkerBezorg:
+	default:
+		return fmt.Errorf("%s.marker_format %q is invalid; must be empty or bezorg", prefix, watch.MarkerFormat)
+	}
+	if watch.MarkerFormat == "" {
+		watch.MarkerFormat = MarkerEmpty
+	}
+	switch watch.MarkerVerify {
+	case "", MarkerVerifyExists, MarkerVerifySize, MarkerVerifySHA256:
+	default:
+		return fmt.Errorf("%s.marker_verify %q is invalid; must be exists, size, or sha256", prefix, watch.MarkerVerify)
+	}
+	if watch.MarkerVerify == "" {
+		watch.MarkerVerify = MarkerVerifyExists
+	}
+	if watch.MarkerFormat == MarkerEmpty && watch.MarkerVerify != MarkerVerifyExists {
+		return fmt.Errorf("%s.marker_verify requires marker_format: bezorg", prefix)
+	}
+	return nil
 }
 
 func validateGlob(pattern string) error {

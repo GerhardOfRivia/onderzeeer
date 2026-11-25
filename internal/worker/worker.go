@@ -13,6 +13,7 @@ import (
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/executor"
+	"github.com/GerhardOfRivia/onderzeeer/internal/manifest"
 	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
@@ -48,15 +49,37 @@ type PipelineResolver interface {
 // ConfigResolver is an immutable pipeline snapshot built from configuration.
 type ConfigResolver struct {
 	pipelines map[string][]config.CommandConfig
+	markers   map[string]markerWatch
+}
+
+type markerWatch struct {
+	format config.MarkerFormat
+	verify config.MarkerVerify
 }
 
 // NewConfigResolver constructs a resolver from configured watches.
 func NewConfigResolver(watches []config.WatchConfig) *ConfigResolver {
 	pipelines := make(map[string][]config.CommandConfig, len(watches))
+	markers := make(map[string]markerWatch)
 	for _, watch := range watches {
 		pipelines[watch.Name] = clonePipeline(watch.Pipeline)
+		if watch.TriggersOnMarker() {
+			markers[watch.Name] = markerWatch{format: watch.MarkerFormat, verify: watch.MarkerVerify}
+		}
 	}
-	return &ConfigResolver{pipelines: pipelines}
+	return &ConfigResolver{pipelines: pipelines, markers: markers}
+}
+
+// Marker reports the completion-file settings for a marker watch.
+func (resolver *ConfigResolver) Marker(watchName string) (config.MarkerFormat, config.MarkerVerify, bool) {
+	if resolver == nil {
+		return "", "", false
+	}
+	marker, ok := resolver.markers[watchName]
+	if !ok {
+		return "", "", false
+	}
+	return marker.format, marker.verify, true
 }
 
 // Resolve returns a copy so template expansion for one job cannot mutate the
@@ -283,12 +306,16 @@ func (pool *Pool) processJob(ctx context.Context, job *queue.Job) error {
 		return pool.failJob(job, fmt.Errorf("resolve pipeline: %w", err), started)
 	}
 
+	templateData, err := pool.templateData(job)
+	if err != nil {
+		return pool.failJob(job, err, started)
+	}
 	for index, configured := range pipeline {
-		expander := executor.NewExpander(executor.TemplateData{
-			File:  job.Path,
-			JobID: job.ID,
-		})
+		expander := executor.NewExpander(templateData)
 		expanded := expandConfiguredCommand(configured, expander)
+		if templateData.Manifest != "" {
+			expanded.Env = markerEnvironment(expanded.Env, templateData)
+		}
 		if err := expanded.ValidateExecution(); err != nil {
 			return pool.failJob(job, fmt.Errorf("command %q after template expansion: %w", expanded.Name, err), started)
 		}
@@ -536,6 +563,49 @@ func commandFromConfig(command config.CommandConfig) executor.Command {
 // serializes them. Shell source is deliberately excluded: job-derived values
 // reach a shell through command_args or env, where they remain data rather than
 // becoming executable syntax.
+func (pool *Pool) templateData(job *queue.Job) (executor.TemplateData, error) {
+	data := executor.TemplateData{File: job.Path, JobID: job.ID, ExternalID: job.ExternalID}
+	resolver, ok := pool.resolver.(*ConfigResolver)
+	if !ok {
+		return data, nil
+	}
+	format, verify, marker := resolver.Marker(job.WatchName)
+	if !marker {
+		return data, nil
+	}
+	data.Manifest = job.Path
+	data.Files = "[]"
+	if format != config.MarkerBezorg {
+		return data, nil
+	}
+	parsed, err := manifest.Load(job.Path, verify)
+	if err != nil {
+		return data, fmt.Errorf("read completion manifest: %w", err)
+	}
+	data.Files = parsed.FilesJSON()
+	if data.ExternalID == "" {
+		data.ExternalID = parsed.ExternalID
+	}
+	return data, nil
+}
+
+func markerEnvironment(values map[string]string, data executor.TemplateData) map[string]string {
+	if values == nil {
+		values = map[string]string{}
+	}
+	defaults := map[string]string{
+		"ONDERZEEER_MANIFEST":    data.Manifest,
+		"ONDERZEEER_FILES":       data.Files,
+		"ONDERZEEER_EXTERNAL_ID": data.ExternalID,
+	}
+	for key, value := range defaults {
+		if _, exists := values[key]; !exists {
+			values[key] = value
+		}
+	}
+	return values
+}
+
 func expandConfiguredCommand(command config.CommandConfig, expander executor.Expander) config.CommandConfig {
 	command.Args = expandConfiguredStrings(command.Args, expander)
 	command.Image = expander.String(command.Image)

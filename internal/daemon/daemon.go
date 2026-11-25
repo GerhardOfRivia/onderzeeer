@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 
 	"github.com/GerhardOfRivia/onderzeeer/internal/config"
 	"github.com/GerhardOfRivia/onderzeeer/internal/executor"
+	"github.com/GerhardOfRivia/onderzeeer/internal/manifest"
 	"github.com/GerhardOfRivia/onderzeeer/internal/metrics"
 	"github.com/GerhardOfRivia/onderzeeer/internal/queue"
 	"github.com/GerhardOfRivia/onderzeeer/internal/resource"
@@ -79,13 +81,35 @@ func run(ctx context.Context, cfg *config.Config, logger *slog.Logger, resources
 	}
 
 	handleFile := func(ctx context.Context, watch config.WatchConfig, file watcher.File) error {
-		fingerprint := file.Fingerprint
-		if !watch.ReprocessOnChange {
-			fingerprint = singleVersionFingerprint
-		}
 		externalID, err := externalIDFor(watch, file)
 		if err != nil {
 			return err
+		}
+		if watch.TriggersOnMarker() && watch.MarkerFormat == config.MarkerBezorg {
+			parsed, parseErr := manifest.Load(file.Path, watch.MarkerVerify)
+			if parseErr != nil {
+				logger.Warn("rejected completion manifest", "watch", watch.Name, "file", file.Path, "error", parseErr)
+				return fmt.Errorf("%w: %s", watcher.ErrSkipDelivery, parseErr.Error())
+			}
+			if strings.TrimSpace(parsed.ExternalID) != "" {
+				externalID = parsed.ExternalID
+			}
+			if externalID != "" {
+				existing, listErr := store.ListJobs(ctx, queue.JobFilter{ExternalID: externalID, Limit: 2})
+				if listErr != nil {
+					return listErr
+				}
+				for _, job := range existing {
+					if job.Path != file.Path {
+						logger.Warn("manifest external id already belongs to another job", "job_id", job.ID, "watch", watch.Name, "file", file.Path, "external_id", externalID)
+						return nil
+					}
+				}
+			}
+		}
+		fingerprint := file.Fingerprint
+		if !watch.ReprocessOnChange {
+			fingerprint = singleVersionFingerprint
 		}
 		job, created, err := store.Enqueue(ctx, queue.EnqueueParams{
 			WatchName:   watch.Name,
